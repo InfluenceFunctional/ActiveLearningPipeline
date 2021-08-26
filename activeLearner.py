@@ -1,6 +1,7 @@
 from models import modelNet
 from querier import *
 from sampler import *
+from Agent import DQN
 from torch.utils import data
 import torch.nn.functional as F
 import torch
@@ -17,7 +18,7 @@ class activeLearning():
         self.runNum = self.params.run_num
         self.setup()
         self.getModelSize()
-
+        self.agent = DQN()
 
     def setup(self):
         '''

@@ -334,9 +334,9 @@ class Oracle():
 
     def numbers2letters(self, sequences):  # Tranforming letters to numbers (1234 --> ATGC)
         '''
-        Converts numerical values to ATGC-format
+        Converts numerical values to ATCG-format
         :param sequences: numerical DNA sequences to be converted
-        :return: DNA sequences in ATGC format
+        :return: DNA sequences in ATCG format
         '''
         if type(sequences) != np.ndarray:
             sequences = np.asarray(sequences)

@@ -39,14 +39,14 @@ def add_args(parser):
     """
     parser.add_argument("--run_num", type=int, default=0, help="Experiment ID")
     parser.add_argument("--comet_project", default='just train nupack', type=str)
-    parser.add_argument("--comet_tags", type=str,default='10k_series')
+    parser.add_argument("--comet_tags", type=str,default='500_series')
     parser.add_argument("--model_seed",type=int,default=0,help="if we are using a toy dataset, it may take a specific seed")
     parser.add_argument("--dataset_seed",type=int,default=0,help="if we are using a toy dataset, it may take a specific seed")
     parser.add_argument("--oracle_seed",type=int,default=0,help="if we are using a toy dataset, it may take a specific seed")
     parser.add_argument("--device", default="cuda", type=str, help="'cuda' or 'cpu'")
 
     # oracle -- only used when building a new dataset
-    parser.add_argument("--dataset_size",type=int,default=int(2e4),help="number of items in the initial (toy) dataset")
+    parser.add_argument("--dataset_size",type=int,default=int(1e3),help="number of items in the initial (toy) dataset")
     parser.add_argument("--dataset_dict_size",type=int,default=4,help="number of possible choices per-state, e.g., [0,1] would be two, [1,2,3,4] (representing ATGC) would be 4 - with variable length, 0's are added for padding")
     parser.add_argument("--oracle", type=str, default="nupack energy")  # 'linear' 'potts' 'nupack energy' 'nupack pairs' 'nupack pins'
     parser.add_argument("--dataset_type",type=str,default="toy",help="Toy oracle is very fast to sample",)
@@ -55,23 +55,24 @@ def add_args(parser):
     parser.add_argument("--max_sample_length", type=int, default=60)
 
     # Proxy model
-    parser.add_argument("--proxy_model_type",type=str,default="transformer",  help="type of proxy model - mlp or transformer")
+    parser.add_argument("--proxy_model_type",type=str,default="transformer2",  help="type of proxy model - mlp or transformer")
     parser.add_argument("--training_parallelism",action="store_true",default=False,help="fast enough on GPU without paralellism - True doesn't always work on linux")
     parser.add_argument("--proxy_model_ensemble_size",type=int,default=1,help="number of models in the ensemble")
-    parser.add_argument("--proxy_model_embedding_width", type=int, default=256) # depth of transformer embedding
-    parser.add_argument("--proxy_model_width",type=int,default=256,help="number of neurons per proxy NN layer")
-    parser.add_argument("--proxy_model_layers",type=int,default=8,help="number of layers in NN proxy models (transformer encoder layers OR MLP layers)")
-    parser.add_argument("--proxy_training_batch_size", type=int, default=100000)
-    parser.add_argument("--proxy_max_epochs", type=int, default=2000)
+    parser.add_argument("--proxy_model_embedding_width", type=int, default=32) # depth of transformer embedding
+    parser.add_argument("--proxy_model_width",type=int,default=32,help="number of neurons per proxy NN layer")
+    parser.add_argument("--proxy_model_layers",type=int,default=4,help="number of layers in NN proxy models (transformer encoder layers OR MLP layers)")
+    parser.add_argument("--proxy_training_batch_size", type=int, default=10)
+    add_bool_arg(parser, "auto_batch_sizing", default=False)
+    parser.add_argument("--proxy_max_epochs", type=int, default=1000)
     add_bool_arg(parser, 'proxy_shuffle_dataset', default=True)
     add_bool_arg(parser, 'proxy_clip_max', default=False)
     parser.add_argument("--proxy_dropout_prob", type=float,default=0) #[0,1) dropout probability on fc layers
     parser.add_argument("--proxy_attention_dropout_prob", type=float,default=0) #[0,1) dropout probability on attention layers
     parser.add_argument("--proxy_norm", type=str,default='batch') # None, 'batch'
-    parser.add_argument("--proxy_attention_norm", type = str, default = 'layer')
+    parser.add_argument("--proxy_attention_norm", type = str, default = 'layer') # None, 'layer'
     parser.add_argument("--proxy_aggregation", type=str, default = 'sum')
-    parser.add_argument("--proxy_init_lr", type=float, default = 1e-3)
-    parser.add_argument("--proxy_history", type=int, default = 500)
+    parser.add_argument("--proxy_init_lr", type=float, default = 1e-5)
+    parser.add_argument("--proxy_history", type=int, default = 100)
 
     return parser
 
@@ -142,10 +143,12 @@ class nupackModel():
         '''
         if self.config.proxy_model_type == 'transformer': # switch to variable-length sequence model
             self.model = transformer(self.config)
+        elif self.config.proxy_model_type == 'transformer2':  # switch to variable-length sequence model
+            self.model = transformer2(self.config)
         elif self.config.proxy_model_type == 'mlp':
             self.model = MLP(self.config)
         else:
-            print(self.config.proxy.model_type + ' is not one of the available models')
+            print(self.config.proxy_model_type + ' is not one of the available models')
 
         if self.config.device == 'cuda':
             self.model = self.model.cuda()
@@ -158,7 +161,10 @@ class nupackModel():
         train model until test loss converges
         :return:
         '''
-        self.config.proxy_training_batch_size = self.get_training_batch_size()
+        if self.config.auto_batch_sizing:
+            self.config.proxy_training_batch_size = self.get_training_batch_size()
+        else:
+            pass
         self.initModel() # reset model
 
         [self.err_tr_hist, self.err_te_hist] = [[], []] # initialize error records
@@ -290,6 +296,7 @@ class nupackModel():
         '''
 
         return F.smooth_l1_loss(output[:,0], targets.float())
+        #return F.mse_loss(output[:,0], targets.float())
 
 
     def evaluate(self, Data, output="Average"):
@@ -513,7 +520,7 @@ class transformer(nn.Module):
     def forward(self,x, clip = None):
         x_key_padding_mask = (x==0).clone().detach() # zero out the attention of empty sequence elements
         x = self.embedding(x.transpose(1,0).int()) # [seq, batch]
-        x = self.positionalEncoder(x)
+        #x = self.positionalEncoder(x)
         #x = self.encoder(x,src_key_padding_mask=x_key_padding_mask)
         #x = x.permute(1,0,2).reshape(x_key_padding_mask.shape[0], int(self.embedDim*self.maxLen))
         for i in range(self.encoder_layers):
@@ -557,6 +564,220 @@ class transformer(nn.Module):
 
         return x
 
+
+class transformer2(nn.Module):
+    def __init__(self,config):
+        super(transformer2,self).__init__()
+
+        self.embedDim = config.proxy_model_embedding_width
+        self.filters = config.proxy_model_width
+        self.encoder_layers = config.proxy_model_layers
+        self.decoder_layers = 1
+        self.maxLen = config.max_sample_length
+        self.dictLen = config.dataset_dict_size
+        self.classes = int(config.dataset_dict_size + 1)
+        self.heads = max([4, max([1,self.embedDim//self.dictLen])])
+        self.relative_attention = True
+        act_func = 'gelu'
+
+        self.positionalEncoder = PositionalEncoding(self.embedDim, max_len = self.maxLen, dropout=config.proxy_attention_dropout_prob)
+        self.embedding = nn.Embedding(self.dictLen + 1, embedding_dim = self.embedDim)
+
+        factory_kwargs = {'device': None, 'dtype': None}
+        #encoder_layer = nn.TransformerEncoderLayer(self.embedDim, nhead = self.heads,dim_feedforward=self.filters, activation='gelu', dropout=0)
+        #self.encoder = nn.TransformerEncoder(encoder_layer, num_layers = self.layers)
+        self.decoder_linear = []
+        self.encoder_norms1 = []
+        self.encoder_norms2 = []
+        self.decoder_norms = []
+        self.encoder_dropouts = []
+        self.decoder_dropouts = []
+        self.encoder_linear1 = []
+        self.encoder_linear2 = []
+        self.self_attn_layers = []
+        self.aggregation_mode = config.proxy_aggregation
+        self.encoder_activations = []
+        self.decoder_activations = []
+
+        for i in range(self.encoder_layers):
+            self.encoder_linear1.append(nn.Linear(self.embedDim,self.embedDim))
+            self.encoder_linear2.append(nn.Linear(self.embedDim,self.embedDim))
+
+            if not self.relative_attention:
+                self.self_attn_layers.append(nn.MultiheadAttention(self.embedDim, self.heads, dropout=config.proxy_attention_dropout_prob, batch_first=False, **factory_kwargs))
+            else:
+                self.self_attn_layers.append(RelativeGlobalAttention(self.embedDim, self.heads, dropout=config.proxy_attention_dropout_prob, max_len=self.maxLen))
+
+            self.encoder_activations.append(Activation(act_func, self.filters))
+
+            if config.proxy_dropout_prob != 0:
+                self.encoder_dropouts.append(nn.Dropout(config.proxy_dropout_prob))
+            else:
+                self.encoder_dropouts.append(nn.Identity())
+
+            if config.proxy_attention_norm == 'layer': # work in progress
+                self.encoder_norms1.append(nn.LayerNorm(self.embedDim))
+                self.encoder_norms2.append(nn.LayerNorm(self.embedDim))
+
+            else:
+                self.encoder_norms1.append(nn.Identity())
+                self.encoder_norms2.append(nn.Identity())
+
+
+        for i in range(self.decoder_layers):
+            if i == 0:
+                self.decoder_linear.append(nn.Linear(self.embedDim, self.filters))
+            else:
+                self.decoder_linear.append(nn.Linear(self.filters, self.filters))
+
+            self.decoder_activations.append(Activation(act_func,self.filters))
+            if config.proxy_dropout_prob != 0:
+                self.decoder_dropouts.append(nn.Dropout(config.proxy_dropout_prob))
+            else:
+                self.decoder_dropouts.append(nn.Identity())
+
+            if config.proxy_norm == 'batch':
+                self.decoder_norms.append(nn.BatchNorm1d(self.filters))
+            else:
+                self.decoder_norms.append(nn.Identity())
+
+        self.decoder_linear = nn.ModuleList(self.decoder_linear)
+        self.encoder_linear1 = nn.ModuleList(self.encoder_linear1)
+        self.encoder_linear2 = nn.ModuleList(self.encoder_linear2)
+
+        self.self_attn_layers = nn.ModuleList(self.self_attn_layers)
+        self.encoder_norms1 = nn.ModuleList(self.encoder_norms1)
+        self.encoder_norms2 = nn.ModuleList(self.encoder_norms2)
+        self.decoder_norms = nn.ModuleList(self.decoder_norms)
+        self.encoder_dropouts = nn.ModuleList(self.encoder_dropouts)
+        self.decoder_dropouts = nn.ModuleList(self.decoder_dropouts)
+        self.encoder_activations = nn.ModuleList(self.encoder_activations)
+        self.decoder_activations = nn.ModuleList(self.decoder_activations)
+
+        self.output_layer = nn.Linear(self.filters,1,bias=False)
+
+    def forward(self,x, clip = None):
+        x_key_padding_mask = (x==0).clone().detach() # zero out the attention of empty sequence elements
+        x = self.embedding(x.transpose(1,0).int()) # [seq, batch]
+
+        for i in range(self.encoder_layers):
+            # Self-attention block
+            residue = x.clone()
+            x = self.encoder_norms1[i](x)
+            if not self.relative_attention:
+                x = self.self_attn_layers[i](x,x,x,key_padding_mask=x_key_padding_mask)[0]
+            else:
+                x = self.self_attn_layers[i](x.transpose(1,0)).transpose(1,0) # pairwise relative position encoding embedded in the self-attention block
+            x = self.encoder_dropouts[i](x)
+            x = x + residue
+
+            # dense block
+            residue = x.clone()
+            x = self.encoder_linear1[i](x)
+            x = self.encoder_norms2[i](x)
+            x = self.encoder_activations[i](x)
+            x = self.encoder_linear2[i](x)
+            x = x + residue
+
+        if self.aggregation_mode == 'mean':
+            x = x.mean(dim=0) # mean aggregation
+        elif self.aggregation_mode == 'sum':
+            x = x.sum(dim=0) # sum aggregation
+        elif self.aggregation_mode == 'max':
+            x = x.max(dim=0) # max aggregation
+        else:
+            print(self.aggregation_mode + ' is not a valid aggregation mode!')
+
+        for i in range(self.decoder_layers):
+            if i != 0:
+                residue = x.clone()
+            x = self.decoder_linear[i](x)
+            x = self.decoder_norms[i](x)
+            x = self.decoder_dropouts[i](x)
+            x = self.decoder_activations[i](x)
+            if i != 0:
+                x += residue
+
+        x = self.output_layer(x)
+
+        if clip is not None:
+            x = torch.clip(x,max=clip)
+
+        return x
+
+
+class RelativeGlobalAttention(nn.Module):
+    def __init__(self, d_model, num_heads, max_len=1024, dropout=0.1):
+        super().__init__()
+        d_head, remainder = divmod(d_model, num_heads)
+        if remainder:
+            raise ValueError(
+                "incompatible `d_model` and `num_heads`"
+            )
+        self.max_len = max_len
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.key = nn.Linear(d_model, d_model)
+        self.value = nn.Linear(d_model, d_model)
+        self.query = nn.Linear(d_model, d_model)
+        self.dropout = nn.Dropout(dropout)
+        self.Er = nn.Parameter(torch.randn(max_len, d_head))
+        self.register_buffer(
+            "mask",
+            torch.tril(torch.ones(max_len, max_len))
+                .unsqueeze(0).unsqueeze(0)
+        )
+        # self.mask.shape = (1, 1, max_len, max_len)
+
+    def forward(self, x):
+        # x.shape == (batch_size, seq_len, d_model)
+        batch_size, seq_len, _ = x.shape
+
+        if seq_len > self.max_len:
+            raise ValueError(
+                "sequence length exceeds model capacity"
+            )
+
+        k_t = self.key(x).reshape(batch_size, seq_len, self.num_heads, -1).permute(0, 2, 3, 1)
+        # k_t.shape = (batch_size, num_heads, d_head, seq_len)
+        v = self.value(x).reshape(batch_size, seq_len, self.num_heads, -1).transpose(1, 2)
+        q = self.query(x).reshape(batch_size, seq_len, self.num_heads, -1).transpose(1, 2)
+        # shape = (batch_size, num_heads, seq_len, d_head)
+
+        start = self.max_len - seq_len
+        Er_t = self.Er[start:, :].transpose(0, 1)
+        # Er_t.shape = (d_head, seq_len)
+        QEr = torch.matmul(q, Er_t)
+        # QEr.shape = (batch_size, num_heads, seq_len, seq_len)
+        Srel = self.skew(QEr)
+        # Srel.shape = (batch_size, num_heads, seq_len, seq_len)
+
+        QK_t = torch.matmul(q, k_t)
+        # QK_t.shape = (batch_size, num_heads, seq_len, seq_len)
+        attn = (QK_t + Srel) / math.sqrt(q.size(-1))
+        mask = self.mask[:, :, :seq_len, :seq_len]
+        # mask.shape = (1, 1, seq_len, seq_len)
+        attn = attn.masked_fill(mask == 0, float("-inf"))
+        # attn.shape = (batch_size, num_heads, seq_len, seq_len)
+        attn = F.softmax(attn, dim=-1)
+        out = torch.matmul(attn, v)
+        # out.shape = (batch_size, num_heads, seq_len, d_head)
+        out = out.transpose(1, 2)
+        # out.shape == (batch_size, seq_len, num_heads, d_head)
+        out = out.reshape(batch_size, seq_len, -1)
+        # out.shape == (batch_size, seq_len, d_model)
+        return self.dropout(out)
+
+    def skew(self, QEr):
+        # QEr.shape = (batch_size, num_heads, seq_len, seq_len)
+        padded = F.pad(QEr, (1, 0))
+        # padded.shape = (batch_size, num_heads, seq_len, 1 + seq_len)
+        batch_size, num_heads, num_rows, num_cols = padded.shape
+        reshaped = padded.reshape(batch_size, num_heads, num_cols, num_rows)
+        # reshaped.size = (batch_size, num_heads, 1 + seq_len, seq_len)
+        Srel = reshaped[:, :, 1:, :]
+        # Srel.shape = (batch_size, num_heads, seq_len, seq_len)
+        return Srel
 
 class MLP(nn.Module):
     def __init__(self,config):
@@ -1010,8 +1231,14 @@ if __name__ == "__main__":
     # Handle command line arguments and configuration
     parser = ArgumentParser()
     parser = add_args(parser)
-    config = parser.parse_args()
-    config = process_config(config)
 
-    trainer = Trainer(config)
-    trainer.train()
+
+    n_runs = 5
+    for i in range(n_runs):
+        config = parser.parse_args()
+        config = process_config(config)
+        config.run_num = i
+        config.dataset_seed = i
+        config.model_seed = i
+        trainer = Trainer(config)
+        trainer.train()

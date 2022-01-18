@@ -39,14 +39,14 @@ def add_args(parser):
     """
     parser.add_argument("--run_num", type=int, default=0, help="Experiment ID")
     parser.add_argument("--comet_project", default='just train nupack', type=str)
-    parser.add_argument("--comet_tags", type=str,default='500_series')
+    parser.add_argument("--comet_tags", type=str,default=['small model comparison', 'test batch 2'])
     parser.add_argument("--model_seed",type=int,default=0,help="if we are using a toy dataset, it may take a specific seed")
     parser.add_argument("--dataset_seed",type=int,default=0,help="if we are using a toy dataset, it may take a specific seed")
     parser.add_argument("--oracle_seed",type=int,default=0,help="if we are using a toy dataset, it may take a specific seed")
     parser.add_argument("--device", default="cuda", type=str, help="'cuda' or 'cpu'")
 
     # oracle -- only used when building a new dataset
-    parser.add_argument("--dataset_size",type=int,default=int(1e3),help="number of items in the initial (toy) dataset")
+    parser.add_argument("--dataset_size",type=int,default=int(5e2),help="number of items in the initial (toy) dataset")
     parser.add_argument("--dataset_dict_size",type=int,default=4,help="number of possible choices per-state, e.g., [0,1] would be two, [1,2,3,4] (representing ATGC) would be 4 - with variable length, 0's are added for padding")
     parser.add_argument("--oracle", type=str, default="nupack energy")  # 'linear' 'potts' 'nupack energy' 'nupack pairs' 'nupack pins'
     parser.add_argument("--dataset_type",type=str,default="toy",help="Toy oracle is very fast to sample",)
@@ -56,23 +56,23 @@ def add_args(parser):
 
     # Proxy model
     parser.add_argument("--proxy_model_type",type=str,default="transformer2",  help="type of proxy model - mlp or transformer")
-    parser.add_argument("--training_parallelism",action="store_true",default=False,help="fast enough on GPU without paralellism - True doesn't always work on linux")
+    parser.add_argument("--MLP_embedding", type=str, default='embed') # 'embed' or 'one hot'
     parser.add_argument("--proxy_model_ensemble_size",type=int,default=1,help="number of models in the ensemble")
-    parser.add_argument("--proxy_model_embedding_width", type=int, default=32) # depth of transformer embedding
-    parser.add_argument("--proxy_model_width",type=int,default=32,help="number of neurons per proxy NN layer")
+    parser.add_argument("--proxy_model_embedding_width", type=int, default=64) # depth of transformer embedding
+    parser.add_argument("--proxy_model_width",type=int,default=64,help="number of neurons per proxy NN layer")
     parser.add_argument("--proxy_model_layers",type=int,default=4,help="number of layers in NN proxy models (transformer encoder layers OR MLP layers)")
-    parser.add_argument("--proxy_training_batch_size", type=int, default=10)
-    add_bool_arg(parser, "auto_batch_sizing", default=False)
+    parser.add_argument("--proxy_training_batch_size", type=int, default=100000)
+    add_bool_arg(parser, "auto_batch_sizing", default=True)
     parser.add_argument("--proxy_max_epochs", type=int, default=1000)
     add_bool_arg(parser, 'proxy_shuffle_dataset', default=True)
     add_bool_arg(parser, 'proxy_clip_max', default=False)
     parser.add_argument("--proxy_dropout_prob", type=float,default=0) #[0,1) dropout probability on fc layers
-    parser.add_argument("--proxy_attention_dropout_prob", type=float,default=0) #[0,1) dropout probability on attention layers
-    parser.add_argument("--proxy_norm", type=str,default='batch') # None, 'batch'
+    parser.add_argument("--proxy_attention_dropout_prob", type=float,default=0.5) #[0,1) dropout probability on attention layers
+    parser.add_argument("--proxy_norm", type=str,default='layer') # None, 'batch', 'layer'
     parser.add_argument("--proxy_attention_norm", type = str, default = 'layer') # None, 'layer'
     parser.add_argument("--proxy_aggregation", type=str, default = 'sum')
     parser.add_argument("--proxy_init_lr", type=float, default = 1e-5)
-    parser.add_argument("--proxy_history", type=int, default = 100)
+    parser.add_argument("--proxy_history", type=int, default = 50)
 
     return parser
 
@@ -638,6 +638,8 @@ class transformer2(nn.Module):
 
             if config.proxy_norm == 'batch':
                 self.decoder_norms.append(nn.BatchNorm1d(self.filters))
+            elif config.proxy_norm == 'layer':
+                self.decoder_norms.append(nn.LayerNorm(self.filters))
             else:
                 self.decoder_norms.append(nn.Identity())
 
@@ -791,12 +793,21 @@ class MLP(nn.Module):
         self.layers = config.proxy_model_layers
         self.filters = config.proxy_model_width
         self.classes = int(config.dataset_dict_size + 1)
-        self.init_layer_depth = int(self.inputLength * self.classes)
+        self.embedding_mode = config.MLP_embedding
 
         # build input and output layers
-        self.initial_layer = nn.Linear(int(self.inputLength * self.classes), self.filters) # layer which takes in our sequence in one-hot encoding
-        self.activation1 = Activation(act_func,self.filters,config)
+        if config.MLP_embedding == 'one hot':
+            self.init_layer_depth = int(self.inputLength * self.classes)
+            self.initial_layer = nn.Linear(self.init_layer_depth, self.filters) # layer which takes in our sequence in one-hot encoding
 
+        elif config.MLP_embedding == 'embed':
+            self.embedDim = config.proxy_model_embedding_width
+            self.dictLen = config.dataset_dict_size
+            self.embedding = nn.Embedding(self.dictLen + 1, embedding_dim=self.embedDim)
+            self.init_layer_depth = int(self.embedDim * self.inputLength)
+            self.initial_layer = nn.Linear(self.init_layer_depth, self.filters) # layer which takes in our sequence in one-hot encoding
+
+        self.activation1 = Activation(act_func, self.filters, config)
         self.output_layers = nn.Linear(self.filters, 1, bias=False)
 
         # build hidden layers
@@ -810,8 +821,11 @@ class MLP(nn.Module):
             self.activations.append(Activation(act_func, self.filters))
             if config.proxy_norm == 'batch':
                 self.norms.append(nn.BatchNorm1d(self.filters))
+            elif config.proxy_norm =='layer':
+                self.norms.append(nn.LayerNorm(self.filters))
             else:
                 self.norms.append(nn.Identity())
+
             if config.proxy_dropout_prob != 0:
                 self.dropouts.append(nn.Dropout(config.proxy_dropout_prob))
             else:
@@ -825,8 +839,14 @@ class MLP(nn.Module):
 
 
     def forward(self, x, clip = None):
-        x = F.one_hot(x.long(),num_classes=self.classes)
-        x = x.reshape(x.shape[0], self.init_layer_depth).float()
+        if self.embedding_mode == 'one hot':
+            x = F.one_hot(x.long(),num_classes=self.classes)
+            x = x.reshape(x.shape[0], self.init_layer_depth).float()
+        elif self.embedding_mode == 'embed':
+            x = self.embedding(x.long())
+            x = x.reshape(x.shape[0], self.init_layer_depth).float()
+
+
         x = self.activation1(self.initial_layer(x)) # apply linear transformation and nonlinear activation
         for i in range(self.layers):
             residue = x.clone()
@@ -1209,7 +1229,7 @@ class Trainer():
                     self.comet.log_metric('proxy train loss iter {}'.format(j), step=i, value=err_tr_hist[i])
                     self.comet.log_metric('proxy test loss iter {}'.format(j), step=i, value=err_te_hist[i])
 
-
+        return err_tr_hist, err_te_hist
 
     def resetModel(self,ensembleIndex, returnModel = False):
         '''
@@ -1232,13 +1252,75 @@ if __name__ == "__main__":
     parser = ArgumentParser()
     parser = add_args(parser)
 
+    experiments = {}
+    n_runs = 10
+    experiment_tween = [2,4,8,12,2,4,8,12,2,4,8,12,2,4,8,12]
+    experiment_tween2 = [16,16,16,16,32,32,32,32,64,64,64,64,128,128,128,128]
+    experiments['params 1'] = experiment_tween
+    experiments['params 2'] = experiment_tween2
+    n_experiments = len(experiment_tween)
+    for n in range(n_experiments):
+        train_losses, test_losses = [], []
+        for i in range(n_runs):
+            print('Experiment {} run {}'.format(n, i))
+            config = parser.parse_args()
+            config = process_config(config)
 
-    n_runs = 5
-    for i in range(n_runs):
-        config = parser.parse_args()
-        config = process_config(config)
-        config.run_num = i
-        config.dataset_seed = i
-        config.model_seed = i
-        trainer = Trainer(config)
-        trainer.train()
+            config.run_num = i
+            config.dataset_seed = i
+            config.model_seed = i
+            config.proxy_model_layers = experiment_tween[n]
+            config.proxy_model_embedding_width = experiment_tween2[n]
+            config.proxy_model_width = experiment_tween2[n]
+
+            trainer = Trainer(config)
+            err_tr, err_te = trainer.train()
+            train_losses.append(err_tr)
+            test_losses.append(err_te)
+
+        experiments['run {} train losses'.format(n)] = train_losses
+        experiments['run {} test losses'.format(n)] = test_losses
+
+    n_experiments = (len(experiments.keys()) - 2)//2
+    n_runs = len(experiments['run 0 test losses'])
+
+    test_concatenations = []
+    for n in range(n_experiments):
+        maxlen = min([len(experiments['run {} test losses'.format(n)][i]) for i in range(n_runs)])
+        test_concatenations.append(np.asarray(
+            [experiments['run {} test losses'.format(n)][i][:maxlen] for i in range(n_runs)]
+        ))
+
+    test_mins = np.zeros((n_experiments, n_runs))
+    for n in range(n_experiments):
+        test_mins[n, :] = [min(experiments['run {} test losses'.format(n)][i]) for i in range(n_runs)]
+
+    plt.figure(1)
+    plt.clf()
+    plt.subplot(2,2,4)
+    for n in range(n_experiments):
+        test_data = np.transpose(test_concatenations[n])
+        xdata = np.arange(len(test_data))
+        plt.semilogy(xdata, np.average(test_data,axis=1),label = 'test {}'.format(n))
+        plt.fill_between(xdata, np.amin(test_data, axis=1), np.amax(test_data, axis=1), alpha = 0.3)
+    plt.legend()
+    plt.title('Training Runs')
+
+    plt.subplot(2,2,1)
+    plt.plot(test_mins,'k.')
+    plt.plot(np.average(test_mins,axis=1),'mo-')
+    plt.title('Test minima and average')
+
+    plt.subplot(2,2,3)
+    plt.title('Std def of test minima')
+    plt.plot(np.sqrt(np.var(test_mins,axis=1)),'co-')
+
+    edge_len = int(np.sqrt(len(experiment_tween)))
+    plt.subplot(2,4,3)
+    plt.imshow(np.average(test_mins,axis=1).reshape(edge_len,edge_len),origin='lower',extent=(experiment_tween2[0],experiment_tween2[-1],experiment_tween[0],experiment_tween[-1]),aspect="auto")
+    plt.title('2D test map map')
+
+    plt.subplot(2, 4, 4)
+    plt.imshow(np.sqrt(np.var(test_mins,axis=1)).reshape(edge_len,edge_len),origin='lower',extent=(experiment_tween2[0],experiment_tween2[-1],experiment_tween[0],experiment_tween[-1]),aspect="auto")
+    plt.title('2D std dev map')
+

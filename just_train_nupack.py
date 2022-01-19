@@ -1253,9 +1253,9 @@ if __name__ == "__main__":
     parser = add_args(parser)
 
     experiments = {}
-    n_runs = 10
-    experiment_tween = [2,4,8,12,2,4,8,12,2,4,8,12,2,4,8,12]
-    experiment_tween2 = [16,16,16,16,32,32,32,32,64,64,64,64,128,128,128,128]
+    n_runs = 1
+    experiment_tween = [1]#[2,4,8,12,2,4,8,12,2,4,8,12,2,4,8,12]
+    experiment_tween2 = [24]#[16,16,16,16,32,32,32,32,64,64,64,64,128,128,128,128]
     experiments['params 1'] = experiment_tween
     experiments['params 2'] = experiment_tween2
     n_experiments = len(experiment_tween)

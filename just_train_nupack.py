@@ -46,7 +46,7 @@ def add_args(parser):
     parser.add_argument("--device", default="cuda", type=str, help="'cuda' or 'cpu'")
 
     # oracle -- only used when building a new dataset
-    parser.add_argument("--dataset_size",type=int,default=int(5e2),help="number of items in the initial (toy) dataset")
+    parser.add_argument("--dataset_size",type=int,default=int(5000),help="number of items in the initial (toy) dataset") # NOTE dataset is split 10:90 train:test
     parser.add_argument("--dataset_dict_size",type=int,default=4,help="number of possible choices per-state, e.g., [0,1] would be two, [1,2,3,4] (representing ATGC) would be 4 - with variable length, 0's are added for padding")
     parser.add_argument("--oracle", type=str, default="nupack energy")  # 'linear' 'potts' 'nupack energy' 'nupack pairs' 'nupack pins'
     parser.add_argument("--dataset_type",type=str,default="toy",help="Toy oracle is very fast to sample",)
@@ -55,7 +55,7 @@ def add_args(parser):
     parser.add_argument("--max_sample_length", type=int, default=60)
 
     # Proxy model
-    parser.add_argument("--proxy_model_type",type=str,default="transformer2",  help="type of proxy model - mlp or transformer")
+    parser.add_argument("--proxy_model_type",type=str,default="mlp",  help="type of proxy model - mlp or transformer")
     parser.add_argument("--MLP_embedding", type=str, default='embed') # 'embed' or 'one hot'
     parser.add_argument("--proxy_model_ensemble_size",type=int,default=1,help="number of models in the ensemble")
     parser.add_argument("--proxy_model_embedding_width", type=int, default=64) # depth of transformer embedding
@@ -67,12 +67,12 @@ def add_args(parser):
     add_bool_arg(parser, 'proxy_shuffle_dataset', default=True)
     add_bool_arg(parser, 'proxy_clip_max', default=False)
     parser.add_argument("--proxy_dropout_prob", type=float,default=0) #[0,1) dropout probability on fc layers
-    parser.add_argument("--proxy_attention_dropout_prob", type=float,default=0.5) #[0,1) dropout probability on attention layers
+    parser.add_argument("--proxy_attention_dropout_prob", type=float,default=0) #[0,1) dropout probability on attention layers
     parser.add_argument("--proxy_norm", type=str,default='layer') # None, 'batch', 'layer'
     parser.add_argument("--proxy_attention_norm", type = str, default = 'layer') # None, 'layer'
     parser.add_argument("--proxy_aggregation", type=str, default = 'sum')
     parser.add_argument("--proxy_init_lr", type=float, default = 1e-5)
-    parser.add_argument("--proxy_history", type=int, default = 50)
+    parser.add_argument("--proxy_history", type=int, default = 100)
 
     return parser
 
@@ -171,7 +171,7 @@ class nupackModel():
 
         tr, te, self.datasetSize = getDataloaders(self.config, self.ensembleIndex, dataset)
 
-        #printRecord(f"Dataset size is: {bcolors.OKCYAN}%d{bcolors.ENDC}" %self.datasetSize)
+        #print(f"Dataset size is: {bcolors.OKCYAN}%d{bcolors.ENDC}" %self.datasetSize)
 
         self.converged = 0 # convergence flag
         self.epochs = 0
@@ -190,7 +190,7 @@ class nupackModel():
                 self.checkConvergence()
 
             if True:#(self.epochs % 10 == 0):
-                printRecord("Model {} epoch {} train loss {:.3f} test loss {:.3f} took {} seconds".format(self.ensembleIndex, self.epochs, self.err_tr_hist[-1], self.err_te_hist[-1], int(tf-t0)))
+                print("Model {} epoch {} train loss {:.3f} test loss {:.3f} took {} seconds".format(self.ensembleIndex, self.epochs, self.err_tr_hist[-1], self.err_te_hist[-1], int(tf-t0)))
 
             self.epochs += 1
 
@@ -209,7 +209,7 @@ class nupackModel():
 
         if all(torch.stack(self.err_te_hist[-self.config.history+1:])  > self.err_te_hist[-self.config.history]): #
             self.converged = 1
-            printRecord(bcolors.WARNING + "Model converged after {} epochs - test loss increasing at {:.4f}".format(self.epochs + 1, min(self.err_te_hist)) + bcolors.ENDC)
+            print(bcolors.WARNING + "Model converged after {} epochs - test loss increasing at {:.4f}".format(self.epochs + 1, min(self.err_te_hist)) + bcolors.ENDC)
 
         # check if train loss is unchanging
         lr0 = np.copy(self.optimizer.param_groups[0]['lr'])
@@ -220,12 +220,12 @@ class nupackModel():
 
         if abs(self.err_tr_hist[-self.config.history] - torch.mean(torch.stack(self.err_tr_hist[-self.config.history:])))/self.err_tr_hist[-self.config.history] < eps:
             self.converged = 1
-            printRecord(bcolors.WARNING + "Model converged after {} epochs - hit train loss convergence criterion at {:.4f}".format(self.epochs + 1, min(self.err_te_hist)) + bcolors.ENDC)
+            print(bcolors.WARNING + "Model converged after {} epochs - hit train loss convergence criterion at {:.4f}".format(self.epochs + 1, min(self.err_te_hist)) + bcolors.ENDC)
 
         # check if we run out of epochs
         if self.epochs >= self.config.proxy_max_epochs:
             self.converged = 1
-            printRecord(bcolors.WARNING + "Model converged after {} epochs- epoch limit was hit with test loss {:.4f}".format(self.epochs + 1, min(self.err_te_hist)) + bcolors.ENDC)
+            print(bcolors.WARNING + "Model converged after {} epochs- epoch limit was hit with test loss {:.4f}".format(self.epochs + 1, min(self.err_te_hist)) + bcolors.ENDC)
 
 
     def train_net(self, tr):
@@ -362,9 +362,13 @@ class buildDataset():
         self.samples, self.targets = shuffle(self.samples, self.targets, random_state=config.dataset_seed)
         self.samples = self.samples[:config.dataset_size]
         self.targets = self.targets[:config.dataset_size]
+        self.mean_target = np.mean(self.targets)
 
     def reshuffle(self, seed=None):
         self.samples, self.targets = shuffle(self.samples, self.targets, random_state=seed)
+
+    def getQuantile(self, quantile):
+        return np.quantile(self.targets,quantile)
 
     def __len__(self):
         return len(self.samples)
@@ -389,7 +393,7 @@ def getDataloaders(config, ensembleIndex, dataset): # get the dataloaders, to lo
     dataset = buildDataset(config, dataset)  # get data
     if config.proxy_shuffle_dataset:
         dataset.reshuffle(seed=ensembleIndex)
-    train_size = int(0.5 * len(dataset))  # split data into training and test sets
+    train_size = int(0.1 * len(dataset))  # split data into training and test sets
 
     test_size = len(dataset) - train_size
 
@@ -397,10 +401,14 @@ def getDataloaders(config, ensembleIndex, dataset): # get the dataloaders, to lo
     train_dataset = []
     test_dataset = []
 
+    test_cutoff = 0.1 # we specifically want to evaluate on the lowest energy sequences [0,1)
+    cutoff_value = dataset.getQuantile(test_cutoff)
+
     for i in range(test_size, test_size + train_size): # take the training data from the end - we will get the newly appended datapoints this way without ever seeing the test set
         train_dataset.append(dataset[i])
     for i in range(test_size): # test data is drawn from oldest datapoints
-        test_dataset.append(dataset[i])
+        if dataset[i][1] <= cutoff_value:
+            test_dataset.append(dataset[i])
 
     tr = data.DataLoader(train_dataset, batch_size=training_batch, shuffle=True, num_workers= 0, pin_memory=False)  # build dataloaders
     te = data.DataLoader(test_dataset, batch_size=training_batch, shuffle=False, num_workers= 0, pin_memory=False) # num_workers must be zero or multiprocessing will not work (can't spawn multiprocessing within multiprocessing)
@@ -565,6 +573,124 @@ class transformer(nn.Module):
         return x
 
 
+class transformer3(nn.Module):
+    def __init__(self,config):
+        super(transformer3,self).__init__()
+
+        self.embedDim = config.proxy_model_embedding_width
+        self.filters = config.proxy_model_width
+        self.encoder_layers = config.proxy_model_layers
+        self.decoder_layers = 1
+        self.maxLen = config.max_sample_length
+        self.dictLen = config.dataset_dict_size
+        self.classes = int(config.dataset_dict_size + 1)
+        self.heads = max([4, max([1,self.embedDim//self.dictLen])])
+        self.relative_attention = True
+        act_func = 'gelu'
+
+        self.positionalEncoder = PositionalEncoding(self.embedDim, max_len = self.maxLen, dropout=config.proxy_attention_dropout_prob)
+        self.embedding = nn.Embedding(self.dictLen + 1, embedding_dim = self.embedDim)
+
+        factory_kwargs = {'device': None, 'dtype': None}
+        #encoder_layer = nn.TransformerEncoderLayer(self.embedDim, nhead = self.heads,dim_feedforward=self.filters, activation='gelu', dropout=0)
+        #self.encoder = nn.TransformerEncoder(encoder_layer, num_layers = self.layers)
+        self.encoder_norms1 = []
+        self.encoder_norms2 = []
+        self.encoder_linear1 = []
+        self.encoder_linear2 = []
+        self.self_attn_layers = []
+        self.aggregation_mode = config.proxy_aggregation
+        self.encoder_activations = []
+        self.decoder_activations = []
+
+        for i in range(self.encoder_layers):
+            self.encoder_linear1.append(nn.Linear(self.embedDim,self.embedDim))
+            self.encoder_linear2.append(nn.Linear(self.embedDim,self.embedDim))
+
+            if not self.relative_attention:
+                self.self_attn_layers.append(nn.MultiheadAttention(self.embedDim, self.heads, dropout=config.proxy_attention_dropout_prob, batch_first=False, **factory_kwargs))
+            else:
+                self.self_attn_layers.append(RelativeGlobalAttention(self.embedDim, self.heads, dropout=config.proxy_attention_dropout_prob, max_len=self.maxLen))
+
+            self.encoder_activations.append(Activation(act_func, self.filters))
+
+            if config.proxy_dropout_prob != 0:
+                self.encoder_dropouts.append(nn.Dropout(config.proxy_dropout_prob))
+            else:
+                self.encoder_dropouts.append(nn.Identity())
+
+            if config.proxy_attention_norm == 'layer': # work in progress
+                self.encoder_norms1.append(nn.LayerNorm(self.embedDim))
+                self.encoder_norms2.append(nn.LayerNorm(self.embedDim))
+
+            else:
+                self.encoder_norms1.append(nn.Identity())
+                self.encoder_norms2.append(nn.Identity())
+
+        for i in range(self.decoder_layers):
+            if i == 0:
+                self.decoder_linear.append(nn.Linear(self.embedDim, self.filters))
+            else:
+                self.decoder_linear.append(nn.Linear(self.filters, self.filters))
+
+            self.decoder_activations.append(Activation(act_func,self.filters))
+            if config.proxy_dropout_prob != 0:
+                self.decoder_dropouts.append(nn.Dropout(config.proxy_dropout_prob))
+            else:
+                self.decoder_dropouts.append(nn.Identity())
+
+            if config.proxy_norm == 'batch':
+                self.decoder_norms.append(nn.BatchNorm1d(self.filters))
+            elif config.proxy_norm == 'layer':
+                self.decoder_norms.append(nn.LayerNorm(self.filters))
+            else:
+                self.decoder_norms.append(nn.Identity())
+
+        self.encoder_linear1 = nn.ModuleList(self.encoder_linear1)
+        self.encoder_linear2 = nn.ModuleList(self.encoder_linear2)
+
+        self.self_attn_layers = nn.ModuleList(self.self_attn_layers)
+        self.encoder_norms1 = nn.ModuleList(self.encoder_norms1)
+        self.encoder_norms2 = nn.ModuleList(self.encoder_norms2)
+        self.encoder_dropouts = nn.ModuleList(self.encoder_dropouts)
+        self.decoder_dropouts = nn.ModuleList(self.decoder_dropouts)
+
+        self.spin_encoding = nn.Linear(self.embedDim,self.dictLen + 1)
+        self.spin_linear = nn.Linear(self.dictLen, 1)
+
+
+    def forward(self,x, clip = None):
+        x_key_padding_mask = (x==0).clone().detach() # zero out the attention of empty sequence elements
+        x = self.embedding(x.transpose(1,0).int()) # [seq, batch]
+
+        for i in range(self.encoder_layers):
+            # Self-attention block
+            residue = x.clone()
+            x = self.encoder_norms1[i](x)
+            if not self.relative_attention:
+                x = self.self_attn_layers[i](x,x,x,key_padding_mask=x_key_padding_mask)[0]
+            else:
+                x = self.self_attn_layers[i](x.transpose(1,0)).transpose(1,0) # pairwise relative position encoding embedded in the self-attention block
+            x = self.encoder_dropouts[i](x)
+            x = x + residue
+
+            # dense block
+            residue = x.clone()
+            x = self.encoder_linear1[i](x)
+            x = self.encoder_norms2[i](x)
+            x = self.encoder_activations[i](x)
+            x = self.encoder_linear2[i](x)
+            x = x + residue
+
+        x = self.spin_encoding(x).sigmoid() # downscale to Potts dimension and activate
+        x = self.spin_linear(x)
+        x = x.sum(dim=0) # sum aggregation
+
+
+        return x
+
+
+
 class transformer2(nn.Module):
     def __init__(self,config):
         super(transformer2,self).__init__()
@@ -706,6 +832,8 @@ class transformer2(nn.Module):
             x = torch.clip(x,max=clip)
 
         return x
+
+
 
 
 class RelativeGlobalAttention(nn.Module):
@@ -1213,11 +1341,11 @@ class Trainer():
         test_loss = []
         train_loss = []
         for j in range(self.config.proxy_model_ensemble_size):
-            printRecord('Training model {}'.format(j))
+            print('Training model {}'.format(j))
             self.resetModel(j)
             if j == 0:
                 nParams = get_n_params(self.model.model)
-                printRecord('Proxy model has {} parameters'.format(int(nParams)))
+                print('Proxy model has {} parameters'.format(int(nParams)))
 
             err_tr_hist, err_te_hist = self.model.converge(self.dataset, returnHist=True)
             train_loss.append(err_tr_hist)
@@ -1253,9 +1381,9 @@ if __name__ == "__main__":
     parser = add_args(parser)
 
     experiments = {}
-    n_runs = 1
-    experiment_tween = [1]#[2,4,8,12,2,4,8,12,2,4,8,12,2,4,8,12]
-    experiment_tween2 = [24]#[16,16,16,16,32,32,32,32,64,64,64,64,128,128,128,128]
+    n_runs = 10
+    experiment_tween = [8,8,8, 16,16,16, 32,32,32]
+    experiment_tween2 = [32,64,128, 32,64,128, 32,64,128]
     experiments['params 1'] = experiment_tween
     experiments['params 2'] = experiment_tween2
     n_experiments = len(experiment_tween)
@@ -1280,6 +1408,7 @@ if __name__ == "__main__":
 
         experiments['run {} train losses'.format(n)] = train_losses
         experiments['run {} test losses'.format(n)] = test_losses
+        np.save('mlp_minima_2',experiments)
 
     n_experiments = (len(experiments.keys()) - 2)//2
     n_runs = len(experiments['run 0 test losses'])
@@ -1315,12 +1444,12 @@ if __name__ == "__main__":
     plt.title('Std def of test minima')
     plt.plot(np.sqrt(np.var(test_mins,axis=1)),'co-')
 
-    edge_len = int(np.sqrt(len(experiment_tween)))
+    edge_len = int(np.sqrt(len(experiments['params 2'])))
     plt.subplot(2,4,3)
-    plt.imshow(np.average(test_mins,axis=1).reshape(edge_len,edge_len),origin='lower',extent=(experiment_tween2[0],experiment_tween2[-1],experiment_tween[0],experiment_tween[-1]),aspect="auto")
+    plt.imshow(np.average(test_mins,axis=1).reshape(edge_len,edge_len),origin='lower',extent=(experiments['params 2'][0],experiments['params 2'][-1],experiments['params 1'][0],experiments['params 1'][-1]),aspect="auto")
     plt.title('2D test map map')
 
     plt.subplot(2, 4, 4)
-    plt.imshow(np.sqrt(np.var(test_mins,axis=1)).reshape(edge_len,edge_len),origin='lower',extent=(experiment_tween2[0],experiment_tween2[-1],experiment_tween[0],experiment_tween[-1]),aspect="auto")
+    plt.imshow(np.sqrt(np.var(test_mins,axis=1)).reshape(edge_len,edge_len),origin='lower',extent=(experiments['params 2'][0],experiments['params 2'][-1],experiments['params 1'][0],experiments['params 1'][-1]),aspect="auto")
     plt.title('2D std dev map')
 

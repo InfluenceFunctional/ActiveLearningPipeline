@@ -237,7 +237,7 @@ class nupackModel():
         err_tr = []
         self.model.train(True)
         for i, trainData in enumerate(tr):
-            proxy_loss = self.getLoss(trainData)
+            proxy_loss = self.getLoss(trainData, mse_override=False)
             err_tr.append(proxy_loss.data)  # record the loss
 
             self.optimizer.zero_grad()  # run the optimizer
@@ -267,7 +267,7 @@ class nupackModel():
         self.err_te_hist.append(torch.mean(torch.stack(err_te)))
 
 
-    def getLoss(self, train_data):
+    def getLoss(self, train_data, mse_override = False):
         """
         get the regression loss on a batch of datapoints
         :param train_data: sequences and scores
@@ -294,9 +294,10 @@ class nupackModel():
         plt.plot(targets.cpu().detach().numpy()[ind],'.')
         plt.plot(output.cpu().detach().numpy()[ind],'.')
         '''
-
-        return F.smooth_l1_loss(output[:,0], targets.float())
-        #return F.mse_loss(output[:,0], targets.float())
+        if mse_override:
+            return F.mse_loss(output[:,0], targets.float())
+        else:
+            return F.smooth_l1_loss(output[:,0], targets.float())
 
 
     def evaluate(self, Data, output="Average"):
@@ -1382,8 +1383,8 @@ if __name__ == "__main__":
 
     experiments = {}
     n_runs = 10
-    experiment_tween = [8,8,8, 16,16,16, 32,32,32]
-    experiment_tween2 = [32,64,128, 32,64,128, 32,64,128]
+    experiment_tween = [8]
+    experiment_tween2 = [64]
     experiments['params 1'] = experiment_tween
     experiments['params 2'] = experiment_tween2
     n_experiments = len(experiment_tween)

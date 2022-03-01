@@ -19,7 +19,6 @@ low priority /long term
 ==> add detection for oracle.initializeDataset for if the requested number of samples is a significant fraction of the total sample space - may be faster to return full space or large fraction of all permutations
 
 known issues
-==> mp.pool parallelism often fails on linux
 
 """
 print("Imports...", end="")
@@ -104,6 +103,15 @@ def add_args(parser):
     )
     args2config.update({"toy_oracle_seed": ["seeds", "toy_oracle"]})
     parser.add_argument(
+        "--gflownet_seed",
+        type=int,
+        default=0,
+        help="Seed for GFlowNet random number generator",
+    )
+    args2config.update({"gflownet_seed": ["seeds", "gflownet"]})
+    # Misc
+    args2config.update({"toy_oracle_seed": ["seeds", "toy_oracle"]})
+    parser.add_argument(
         "--machine",
         type=str,
         default="local",
@@ -115,7 +123,9 @@ def add_args(parser):
     parser.add_argument("--workdir", type=str, default=None, help="Working directory")
     args2config.update({"workdir": ["workdir"]})
     # Dataset
-    parser.add_argument("--dataset", type=str, default="linear") # 'linear' 'potts' 'nupack energy' 'nupack pairs' 'nupack pins'
+    parser.add_argument(
+        "--dataset", type=str, default="linear"
+    )  # 'linear' 'potts' 'nupack energy' 'nupack pairs' 'nupack pins'
     args2config.update({"dataset": ["dataset", "oracle"]})
     parser.add_argument(
         "--dataset_type",
@@ -173,6 +183,13 @@ def add_args(parser):
     )
     args2config.update({"query_mode": ["al", "query_mode"]})
     parser.add_argument(
+        "--acquisition_function",
+        type=str,
+        default="learned",
+        help="'none', 'ucb','ei' # different 'things to do' with model uncertainty",
+    )
+    args2config.update({"acquisition_function": ["al", "acquisition_function"]})
+    parser.add_argument(
         "--pipeline_iterations",
         type=int,
         default=1,
@@ -186,6 +203,20 @@ def add_args(parser):
         help="agglomerative 'clustering', 'cutoff' or strictly 'argmin' based query construction",
     )
     args2config.update({"query_selection": ["al", "query_selection"]})
+    parser.add_argument(
+        "--UCB_kappa",
+        type=float,
+        default=0.1,
+        help="wighting of the uncertainty in BO-UCB acquisition function",
+    )
+    args2config.update({"UCB_kappa": ["al", "UCB_kappa"]})
+    parser.add_argument(
+        "--EI_max_percentile",
+        type=float,
+        default=80,
+        help="max percentile for expected improvement (EI) acquisition function",
+    )
+    args2config.update({"EI_max_percentile": ["al", "EI_max_percentile"]})
     parser.add_argument(
         "--minima_dist_cutoff",
         type=float,
@@ -267,10 +298,26 @@ def add_args(parser):
     args2config.update({"gflownet_device": ["gflownet", "device"]})
     parser.add_argument("--gflownet_model_ckpt", default=None, type=str)
     args2config.update({"gflownet_model_ckpt": ["gflownet", "model_ckpt"]})
+    parser.add_argument("--gflownet_reload_ckpt", action="store_true")
+    args2config.update({"gflownet_reload_ckpt": ["gflownet", "reload_ckpt"]})
     parser.add_argument("--gflownet_ckpt_period", default=None, type=int)
     args2config.update({"gflownet_ckpt_period": ["gflownet", "ckpt_period"]})
     parser.add_argument("--gflownet_progress", action="store_true")
     args2config.update({"gflownet_progress": ["gflownet", "progress"]})
+    parser.add_argument(
+        "--gflownet_loss",
+        default="flowmatch",
+        type=str,
+        help="flowmatch | trajectorybalance/tb",
+    )
+    args2config.update({"gflownet_loss": ["gflownet", "loss"]})
+    parser.add_argument(
+        "--gflownet_lr_z_mult",
+        default=10,
+        type=int,
+        help="Multiplicative factor of the Z learning rate",
+    )
+    args2config.update({"gflownet_lr_z_mult": ["gflownet", "lr_z_mult"]})
     parser.add_argument(
         "--gflownet_learning_rate", default=1e-4, help="Learning rate", type=float
     )
@@ -375,6 +422,8 @@ def add_args(parser):
     args2config.update({"gflownet_comet_project": ["gflownet", "comet", "project"]})
     parser.add_argument("--gflownet_no_comet", action="store_true")
     args2config.update({"gflownet_no_comet": ["gflownet", "comet", "skip"]})
+    parser.add_argument("--no_log_times", action="store_true")
+    args2config.update({"no_log_times": ["gflownet", "no_log_times"]})
     parser.add_argument(
         "--tags_gfn", nargs="*", help="Comet.ml tags", default=[], type=str
     )
@@ -399,6 +448,10 @@ def add_args(parser):
     args2config.update(
         {"gflownet_post_annealing_time": ["gflownet", "post_annealing_time"]}
     )
+    parser.add_argument("--gflownet_test_period", default=500, type=int)
+    args2config.update({"gflownet_test_period": ["gflownet", "test", "period"]})
+    parser.add_argument("--gflownet_pct_test", default=500, type=int)
+    args2config.update({"gflownet_pct_test": ["gflownet", "test", "pct_test"]})
     # Proxy model
     parser.add_argument(
         "--proxy_model_type",
@@ -407,13 +460,6 @@ def add_args(parser):
         help="type of proxy model - mlp or transformer",
     )
     args2config.update({"proxy_model_type": ["proxy", "model_type"]})
-    parser.add_argument(
-        "--training_parallelism",
-        action="store_true",
-        default=False,
-        help="fast enough on GPU without paralellism - True doesn't always work on linux",
-    )
-    args2config.update({"training_parallelism": ["proxy", "training_parallelism"]})
     parser.add_argument(
         "--proxy_model_ensemble_size",
         type=int,
@@ -447,6 +493,12 @@ def add_args(parser):
         help="give each model in the ensemble a uniquely shuffled dataset",
     )
     args2config.update({"proxy_shuffle_dataset": ["proxy", "shuffle_dataset"]})
+    parser.add_argument("--proxy_uncertainty_estimation", type=str, default="dropout", help="dropout or ensemble")
+    args2config.update({"proxy_uncertainty_estimation": ["proxy", "uncertainty_estimation"]})
+    parser.add_argument("--proxy_dropout", type=float, default = 0.1)
+    args2config.update({"proxy_dropout": ["proxy", "dropout"]})
+    parser.add_argument("--proxy_dropout_samples", type=int, default = 25, help="number of times to resample via stochastic dropout")
+    args2config.update({"proxy_dropout_samples": ["proxy", "dropout_samples"]})
     # MCMC
     parser.add_argument(
         "--mcmc_sampling_time",
@@ -506,13 +558,15 @@ def process_config(config):
     if config.comet_project:
         config.gflownet.comet.project = config.comet_project
         config.al.comet.project = config.comet_project
+    # sampling method - in case we forget to revert ensemble size
+    if config.proxy.uncertainty_estimation == "dropout":
+        config.proxy.ensemble_size = 1
+        print("Ensemble size set to 1 due to dropout uncertainty estimation being 'on'")
     # Paths
     if not config.workdir and config.machine == "cluster":
         config.workdir = "/home/kilgourm/scratch/learnerruns"
     elif not config.workdir and config.machine == "local":
-        config.workdir = (
-            '/home/mkilgour/learnerruns'#"C:/Users\mikem\Desktop/activeLearningRuns"  #
-        )
+        config.workdir = "/home/mkilgour/learnerruns"  # "C:/Users\mikem\Desktop/activeLearningRuns"  #
     return config
 
 

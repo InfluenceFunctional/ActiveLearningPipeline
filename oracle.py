@@ -179,7 +179,7 @@ class Oracle():
         elif isinstance(self.config.dataset.oracle, list) and all(["nupack " in el for el in self.config.dataset.oracle]):
             return self.nupackScore(queries, returnFunc=[el.replace("nupack ", "") for el in self.config.dataset.oracle])
         else:
-            raise NotImplementedError("Unknown orackle type")
+            raise NotImplementedError("Unknown oracle type")
 
 
     def BB_DOB_functions(self, queries):

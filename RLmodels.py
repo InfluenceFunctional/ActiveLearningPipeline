@@ -72,7 +72,7 @@ class ParameterUpdateDQN(nn.Module):
         # normally it is the - average episode duriation / 2
         # like this NN find optimum better even as the mean is not 0
         self.predictions = nn.Linear(self.model_state_latent_dimension,self.action_size).double()  # not trainable if not is_target_dqn
-        nn.init.constant_(self.predictions.weight, bias_average)
+        #nn.init.constant_(self.predictions.weight, bias_average)
 
     def forward(self, model_state):
         #out = torch.sigmoid(self.fc3(self.fc2(self.fc1(model_state))))

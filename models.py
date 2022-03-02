@@ -14,7 +14,7 @@ from utils import *
 This script contains models for fitting DNA sequence data
 
 > Inputs: list of DNA sequences in letter format
-> Outputs: predicted binding scores, prediction uncertainty 
+> Outputs: predicted binding scores, prediction uncertainty
 
 To-do's
 ==> upgrade to twin net
@@ -192,7 +192,7 @@ class modelNet():
             inputs = torch.Tensor(inputs).cuda()
 
         outputs = l2r(self.model(inputs))
-        self.best_f = np.percentile(outputs, self.config.al.EI_percentile)
+        self.best_f = np.percentile(outputs, self.config.al.EI_max_percentile)
 
 
     def checkConvergence(self):

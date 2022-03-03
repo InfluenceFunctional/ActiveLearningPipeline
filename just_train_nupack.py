@@ -46,8 +46,8 @@ def add_args(parser):
     parser.add_argument("--device", default="cuda", type=str, help="'cuda' or 'cpu'")
 
     # oracle -- only used when building a new dataset
-    parser.add_argument("--dataset_size",type=int,default=int(5000),help="number of items in the initial (toy) dataset") # NOTE dataset is split 10:90 train:test
-    parser.add_argument("--dataset_dict_size",type=int,default=4,help="number of possible choices per-state, e.g., [0,1] would be two, [1,2,3,4] (representing ATGC) would be 4 - with variable length, 0's are added for padding")
+    parser.add_argument("--dataset_size",type=int,default=int(10000),help="number of items in the initial (toy) dataset") # NOTE dataset is split 10:90 train:test
+    parser.add_argument("--dataset_dict_size",type=int,default=8,help="number of possible choices per-state, e.g., [0,1] would be two, [1,2,3,4] (representing ATGC) would be 4 - with variable length, 0's are added for padding")
     parser.add_argument("--oracle", type=str, default="nupack energy")  # 'linear' 'potts' 'nupack energy' 'nupack pairs' 'nupack pins'
     parser.add_argument("--dataset_type",type=str,default="toy",help="Toy oracle is very fast to sample",)
     add_bool_arg(parser,"dataset_variable_length",default=True)
@@ -55,24 +55,24 @@ def add_args(parser):
     parser.add_argument("--max_sample_length", type=int, default=60)
 
     # Proxy model
-    parser.add_argument("--proxy_model_type",type=str,default="mlp",  help="type of proxy model - mlp or transformer")
-    parser.add_argument("--MLP_embedding", type=str, default='embed') # 'embed' or 'one hot'
+    parser.add_argument("--proxy_model_type",type=str,default="transformer2",  help="type of proxy model - mlp or transformer")
+    parser.add_argument("--MLP_embedding", type=str, default='one hot') # 'embed' or 'one hot'
     parser.add_argument("--proxy_model_ensemble_size",type=int,default=1,help="number of models in the ensemble")
     parser.add_argument("--proxy_model_embedding_width", type=int, default=64) # depth of transformer embedding
     parser.add_argument("--proxy_model_width",type=int,default=64,help="number of neurons per proxy NN layer")
-    parser.add_argument("--proxy_model_layers",type=int,default=4,help="number of layers in NN proxy models (transformer encoder layers OR MLP layers)")
-    parser.add_argument("--proxy_training_batch_size", type=int, default=100000)
+    parser.add_argument("--proxy_model_layers",type=int,default=5,help="number of layers in NN proxy models (transformer encoder layers OR MLP layers)")
+    parser.add_argument("--proxy_training_batch_size", type=int, default=10000)
     add_bool_arg(parser, "auto_batch_sizing", default=True)
     parser.add_argument("--proxy_max_epochs", type=int, default=1000)
     add_bool_arg(parser, 'proxy_shuffle_dataset', default=True)
     add_bool_arg(parser, 'proxy_clip_max', default=False)
     parser.add_argument("--proxy_dropout_prob", type=float,default=0) #[0,1) dropout probability on fc layers
     parser.add_argument("--proxy_attention_dropout_prob", type=float,default=0) #[0,1) dropout probability on attention layers
-    parser.add_argument("--proxy_norm", type=str,default='layer') # None, 'batch', 'layer'
+    parser.add_argument("--proxy_norm", type=str,default='batch') # None, 'batch', 'layer'
     parser.add_argument("--proxy_attention_norm", type = str, default = 'layer') # None, 'layer'
     parser.add_argument("--proxy_aggregation", type=str, default = 'sum')
-    parser.add_argument("--proxy_init_lr", type=float, default = 1e-5)
-    parser.add_argument("--proxy_history", type=int, default = 100)
+    parser.add_argument("--proxy_init_lr", type=float, default = 1e-3)
+    parser.add_argument("--proxy_history", type=int, default = 50)
 
     return parser
 
@@ -111,7 +111,8 @@ class nupackModel():
         training_batch_0 = 1 * self.config.proxy_training_batch_size
         #  test various batch sizes to see what we can store in memory
         datasetBuilder = buildDataset(self.config)
-        self.optimizer = optim.AdamW(self.model.parameters(), amsgrad=True, lr=self.config.proxy_init_lr)  # optim.SGD(net.parameters(),lr=1e-4, momentum=0.9, nesterov=True)#
+        #self.optimizer = optim.AdamW(self.model.parameters(), amsgrad=True, lr=self.config.proxy_init_lr)  # optim.SGD(net.parameters(),lr=1e-4, momentum=0.9, nesterov=True)#
+        self.optimizer = optim.Adam(self.model.parameters(), amsgrad=True, lr=self.config.proxy_init_lr)  # optim.SGD(net.parameters(),lr=1e-4, momentum=0.9, nesterov=True)#
 
         while (self.config.proxy_training_batch_size > 1) & (finished == 0):
             try:
@@ -145,14 +146,18 @@ class nupackModel():
             self.model = transformer(self.config)
         elif self.config.proxy_model_type == 'transformer2':  # switch to variable-length sequence model
             self.model = transformer2(self.config)
+        elif self.config.proxy_model_type == 'transformer3':  # switch to variable-length sequence model
+            self.model = transformer3(self.config)
         elif self.config.proxy_model_type == 'mlp':
             self.model = MLP(self.config)
         else:
             print(self.config.proxy_model_type + ' is not one of the available models')
+            raise ValueError
 
         if self.config.device == 'cuda':
             self.model = self.model.cuda()
-        self.optimizer = optim.AdamW(self.model.parameters(), amsgrad=True)
+        #self.optimizer = optim.AdamW(self.model.parameters(), amsgrad=True)
+        self.optimizer = optim.Adam(self.model.parameters(), amsgrad=True)
 
 
 
@@ -193,10 +198,33 @@ class nupackModel():
                 print("Model {} epoch {} train loss {:.3f} test loss {:.3f} took {} seconds".format(self.ensembleIndex, self.epochs, self.err_tr_hist[-1], self.err_te_hist[-1], int(tf-t0)))
 
             self.epochs += 1
+        aa = 1
+        if False: # plot regression results
+            preds = []
+            truth = []
+            for i, trainData in enumerate(tr):
+                preds.extend(self.model(trainData[0].cuda()).cpu().detach().numpy())
+                truth.extend(trainData[1].cpu().detach().numpy())
+            preds = np.asarray(preds)
+            truth = np.asarray(truth)
+            import matplotlib.pyplot as plt
+            plt.clf()
+            plt.scatter(preds * self.std + self.mean, truth)
+            plt.plot(np.linspace(np.amin(truth), np.amax(truth), 100), np.linspace(np.amin(truth), np.amax(truth), 100), 'k.-')
+
+            preds = []
+            truth = []
+            for i, trainData in enumerate(te):
+                preds.extend(self.model(trainData[0].cuda()).cpu().detach().numpy())
+                truth.extend(trainData[1].cpu().detach().numpy())
+            preds = np.asarray(preds)
+            truth = np.asarray(truth)
+            import matplotlib.pyplot as plt
+            plt.scatter(preds * self.std + self.mean, truth)
+            plt.plot(np.linspace(np.amin(truth), np.amax(truth), 100), np.linspace(np.amin(truth), np.amax(truth), 100), 'k.-')
 
         if returnHist:
             return torch.stack(self.err_tr_hist).cpu().detach().numpy(), torch.stack(self.err_te_hist).cpu().detach().numpy()
-
 
     def checkConvergence(self):
         """
@@ -394,7 +422,7 @@ def getDataloaders(config, ensembleIndex, dataset): # get the dataloaders, to lo
     dataset = buildDataset(config, dataset)  # get data
     if config.proxy_shuffle_dataset:
         dataset.reshuffle(seed=ensembleIndex)
-    train_size = int(0.1 * len(dataset))  # split data into training and test sets
+    train_size = int(0.8 * len(dataset))  # split data into training and test sets
 
     test_size = len(dataset) - train_size
 
@@ -402,14 +430,14 @@ def getDataloaders(config, ensembleIndex, dataset): # get the dataloaders, to lo
     train_dataset = []
     test_dataset = []
 
-    test_cutoff = 0.1 # we specifically want to evaluate on the lowest energy sequences [0,1)
-    cutoff_value = dataset.getQuantile(test_cutoff)
+    #test_cutoff = 0.1 # we specifically want to evaluate on the lowest energy sequences [0,1)
+    #cutoff_value = dataset.getQuantile(test_cutoff)
 
     for i in range(test_size, test_size + train_size): # take the training data from the end - we will get the newly appended datapoints this way without ever seeing the test set
         train_dataset.append(dataset[i])
     for i in range(test_size): # test data is drawn from oldest datapoints
-        if dataset[i][1] <= cutoff_value:
-            test_dataset.append(dataset[i])
+        #if dataset[i][1] <= cutoff_value:
+        test_dataset.append(dataset[i])
 
     tr = data.DataLoader(train_dataset, batch_size=training_batch, shuffle=True, num_workers= 0, pin_memory=False)  # build dataloaders
     te = data.DataLoader(test_dataset, batch_size=training_batch, shuffle=False, num_workers= 0, pin_memory=False) # num_workers must be zero or multiprocessing will not work (can't spawn multiprocessing within multiprocessing)
@@ -602,7 +630,7 @@ class transformer3(nn.Module):
         self.self_attn_layers = []
         self.aggregation_mode = config.proxy_aggregation
         self.encoder_activations = []
-        self.decoder_activations = []
+        self.encoder_dropouts = []
 
         for i in range(self.encoder_layers):
             self.encoder_linear1.append(nn.Linear(self.embedDim,self.embedDim))
@@ -628,24 +656,6 @@ class transformer3(nn.Module):
                 self.encoder_norms1.append(nn.Identity())
                 self.encoder_norms2.append(nn.Identity())
 
-        for i in range(self.decoder_layers):
-            if i == 0:
-                self.decoder_linear.append(nn.Linear(self.embedDim, self.filters))
-            else:
-                self.decoder_linear.append(nn.Linear(self.filters, self.filters))
-
-            self.decoder_activations.append(Activation(act_func,self.filters))
-            if config.proxy_dropout_prob != 0:
-                self.decoder_dropouts.append(nn.Dropout(config.proxy_dropout_prob))
-            else:
-                self.decoder_dropouts.append(nn.Identity())
-
-            if config.proxy_norm == 'batch':
-                self.decoder_norms.append(nn.BatchNorm1d(self.filters))
-            elif config.proxy_norm == 'layer':
-                self.decoder_norms.append(nn.LayerNorm(self.filters))
-            else:
-                self.decoder_norms.append(nn.Identity())
 
         self.encoder_linear1 = nn.ModuleList(self.encoder_linear1)
         self.encoder_linear2 = nn.ModuleList(self.encoder_linear2)
@@ -654,10 +664,9 @@ class transformer3(nn.Module):
         self.encoder_norms1 = nn.ModuleList(self.encoder_norms1)
         self.encoder_norms2 = nn.ModuleList(self.encoder_norms2)
         self.encoder_dropouts = nn.ModuleList(self.encoder_dropouts)
-        self.decoder_dropouts = nn.ModuleList(self.decoder_dropouts)
 
         self.spin_encoding = nn.Linear(self.embedDim,self.dictLen + 1)
-        self.spin_linear = nn.Linear(self.dictLen, 1)
+        self.spin_linear = nn.Linear(self.dictLen + 1, 1)
 
 
     def forward(self,x, clip = None):
@@ -1380,7 +1389,27 @@ if __name__ == "__main__":
     # Handle command line arguments and configuration
     parser = ArgumentParser()
     parser = add_args(parser)
+    config = parser.parse_args()
+    config = process_config(config)
+    trainer = Trainer(config)
+    err_tr, err_te = trainer.train()
+    aa = 1
 
+    # visualize predictions
+    tr, te, datasetSize = getDataloaders(trainer.model.config, 0, trainer.dataset)
+    preds = []
+    truth = []
+    for i, trainData in enumerate(tr):
+        preds.extend(trainer.model.model(trainData[0].cuda()).cpu().detach().numpy())
+        truth.extend(trainData[1].cpu().detach().numpy())
+    preds = np.asarray(preds)
+    truth = np.asarray(truth)
+    import matplotlib.pyplot as plt
+
+    plt.clf()
+    plt.scatter(preds * trainer.model.std + trainer.model.mean, truth)
+    plt.plot(np.linspace(np.amin(truth), np.amax(truth), 100), np.linspace(np.amin(truth), np.amax(truth), 100), 'k.-')
+    '''
     experiments = {}
     n_runs = 10
     experiment_tween = [8]
@@ -1454,3 +1483,4 @@ if __name__ == "__main__":
     plt.imshow(np.sqrt(np.var(test_mins,axis=1)).reshape(edge_len,edge_len),origin='lower',extent=(experiments['params 2'][0],experiments['params 2'][-1],experiments['params 1'][0],experiments['params 1'][-1]),aspect="auto")
     plt.title('2D std dev map')
 
+    '''

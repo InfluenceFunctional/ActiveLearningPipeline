@@ -248,8 +248,8 @@ class modelNet():
             self.model.train(True) # need this to be true to activate dropout
             with torch.no_grad():
                 outputs = torch.hstack([self.model(Data) for _ in range(self.config.proxy.dropout_samples)]).cpu().detach().numpy()
-            mean = torch.mean(outputs, dim=1)
-            std = torch.std(outputs, dim=1)
+            mean = np.mean(outputs, axis=1)
+            std = np.std(outputs, axis=1)
         else:
             print("No uncertainty estimator called {}".format(self.config.proxy.uncertainty_estimation))
             sys.exit()
@@ -329,7 +329,8 @@ class modelEnsemble(nn.Module): # just for evaluation of a pre-trained ensemble
     def forward(self, x):
         output = []
         for i in range(len(self.models)): # get the prediction from each model
-            output.append(self.models[i](torch.Tensor(x).clone()))
+            #output.append(self.models[i](torch.Tensor(x).clone()))
+            output.append(self.models[i](x.clone()))
 
         output = torch.cat(output,dim=1) #
         return output # return mean and variance of the ensemble predictions

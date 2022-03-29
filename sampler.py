@@ -364,7 +364,9 @@ class Sampler:
                 std_dev = [r2[1], r1[1]]
 
                 # energy and variance both come out standardized against the training dataset
-                score = self.scoreFunction[0] * np.asarray(energy) - self.scoreFunction[1] * np.asarray(std_dev)  # vary the relative importance of these two factors
+                scaled_energy = [self.scoreFunction[0] * r for r in energy]
+                scaled_uncertainty = [self.scoreFunction[1] * r for r in std_dev]
+                score = [e-u for e,u in zip(scaled_energy,scaled_uncertainty)]  # vary the relative importance of these two factors
 
         return score, energy, std_dev
 

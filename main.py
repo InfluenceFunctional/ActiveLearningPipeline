@@ -615,5 +615,5 @@ if __name__ == "__main__":
         al.runPipeline()
     elif config.al.mode == "sampling only":
         sampleDict = al.runPureSampler()
-    elif config.al.mode == "test_rl":
-        al.agent.train_from_file()
+    elif config.al.mode == "train_rl":
+        al.runPipeline()

@@ -31,7 +31,7 @@ class ActiveLearning:
         self.setup()
         self.getModelSize()
         # Comet
-        if config.al.comet.project:
+        if hasattr(config.al.comet, 'project'):
             self.comet = Experiment(project_name=config.al.comet.project, display_summary_level=0,)
             if config.al.comet.tags:
                 if isinstance(config.al.comet.tags, list):
@@ -84,11 +84,13 @@ class ActiveLearning:
         self.totalLoss = None
         self.testMinima = None
         self.stateDictRecord = None
-        self.reward = None
+        self.model_state_reward = None
+        self.dataset_reward = None
         self.terminal = None
         self.model = None
         self.cumulative_reward = None
-        self.reward_list = None
+        self.model_state_reward_list = None
+        self.dataset_reward_list = None
         self.bottomTenLoss = None
         self.action = None
         self.trueMinimum = None
@@ -150,9 +152,9 @@ class ActiveLearning:
             # Train Policy Network
             self.agent.train(BATCH_SIZE=self.config.al.q_batch_size, dqn_epochs=100, comet = self.comet, iteration=self.episode)
             if self.comet:
-                self.comet.log_metric(name='RL Cumulative Reward', value=self.cumulativeReward, step=self.episode)
-                self.comet.log_metric(name='RL Cumulative Score', value=self.cumulativeScore, step=self.episode)
-            #    self.comet.log_metric(name='RL Agent Training Error', value=self.agent.policy_error, step=self.episode)
+                self.comet.log_metric(name='RL Cumulative Reward', value=self.model_state_cumulative_reward, step=self.episode)
+                self.comet.log_metric(name='RL Cumulative Score', value=self.model_state_cumulative_score, step=self.episode)
+                #self.comet.log_metric(name='RL Agent Training Error', value=self.agent.policy_error, step=self.episode)
                 #self.comet.log_curve(name='RL Agent Training Error', x=list(range(100)), y=self.agent.policy_error, step=self.episode)
             if self.config.al.episodes > (self.episode + 1):  # if we are doing multiple al episodes
                 self.episode += 1
@@ -198,13 +200,13 @@ class ActiveLearning:
 
 
         # CODE FOR LEARNED POLICY
-        #if self.config.al.hyperparams_learning:# and (self.pipeIter > 0):
-        #    model_state_prev, model_state_curr = self.agent.updateModelState(self.stateDict, self.model)
-        #    if model_state_prev is not None:
-        #        self.agent.push_to_buffer(model_state_prev, self.action, model_state_curr, self.reward, self.terminal)
-        #    self.action = self.agent.getAction()
-        #else:
-        #    self.action = None
+        if self.config.al.hyperparams_learning:# and (self.pipeIter > 0):
+            model_state_prev, model_state_curr = self.agent.updateState(self.stateDict, self.model)
+            if model_state_prev is not None:
+                self.agent.push_to_buffer(model_state_prev, self.action, model_state_curr, self.model_state_reward, self.terminal)
+            self.action = self.agent.getAction()
+        else:
+            self.action = None
 
 
     def getModelState(self, terminal):

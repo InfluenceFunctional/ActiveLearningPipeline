@@ -56,7 +56,7 @@ class Oracle():
         else:
             self.linFactors = np.abs(np.random.randn(self.seqLen))  # coefficients for linear toy energy
 
-        hamiltonian = np.random.randn(self.seqLen,self.seqLen) # energy function
+        hamiltonian = np.abs(np.random.randn(self.seqLen,self.seqLen)) # energy function
         self.hamiltonian = np.tril(hamiltonian) + np.tril(hamiltonian, -1).T # random symmetric matrix
 
         pham = np.zeros((self.seqLen,self.seqLen,self.config.dataset.dict_size,self.config.dataset.dict_size))

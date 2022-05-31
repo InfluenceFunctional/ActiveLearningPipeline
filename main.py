@@ -617,3 +617,17 @@ if __name__ == "__main__":
         sampleDict = al.runPureSampler()
     elif config.al.mode == "train_rl":
         al.runPipeline()
+    elif config.al.mode == "rl_gym_test":
+        from Agent import train_toy_agent
+        train_toy_agent(config)
+    '''elif config.al.mode == "rl_gym_test":
+        from Agent import train_toy_agent
+        import cProfile as profile
+        import pstats
+        prof = profile.Profile()
+        prof.enable()
+        train_toy_agent(config)
+        stats = pstats.Stats(prof).strip_dirs().sort_stats("cumtime")
+        prof.disable()
+        # print profiling output
+        stats.print_stats(30) # top 10 rows'''

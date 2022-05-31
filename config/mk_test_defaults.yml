@@ -27,8 +27,8 @@ dataset:
 # AL
 al:
   sample_method: random
-  num_random_samples: 10000
-  annealing_samples: 50
+  num_random_samples: 10000 
+  annealing_samples: 50 # short MCMC on this many samples
   annealing_time: 100
   query_mode: energy # must be 'fancy_acquisition' for our new acquisition functions "EI" and "UCB"
   acquisition_function : null # only for 'fancy_acquisition'
@@ -100,7 +100,7 @@ proxy:
   dropout_samples: 25
 # MCMC
 mcmc:
-  sampling_time: 100
-  num_samplers: 10
+  sampling_time: 5000 # 1000-10000
+  num_samplers: 20 # 10-40
   stun_min_gamma: -3
   stun_max_gamma: 1

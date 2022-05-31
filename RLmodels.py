@@ -1,3 +1,4 @@
+from turtle import forward
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -82,3 +83,16 @@ class ParameterUpdateDQN(nn.Module):
         out = F.relu(self.fc1(model_state))
         out = F.relu(self.fc2(out))
         return torch.sigmoid(self.predictions(out))
+
+
+class MLP(nn.Module):
+    def __init__(self, state_length, action_size, hidden_size):
+        super(MLP, self).__init__()
+        self.fc1 = nn.Linear(state_length, hidden_size)
+        self.fc2 = nn.Linear(hidden_size, hidden_size)
+        self.predictions = nn.Linear(hidden_size, action_size)
+
+    def forward(self, state):
+        out = F.leaky_relu(self.fc1(state))
+        out = F.leaky_relu(self.fc2(out))
+        return self.predictions(out)

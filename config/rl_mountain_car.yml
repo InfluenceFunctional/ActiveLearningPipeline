@@ -1,0 +1,19 @@
+# General
+test_mode: False
+debug: True
+run_num: 0
+explicit_run_enumeration: False
+machine: "local"
+device: "cuda"
+workdir: "/mnt/d/Aptamer RL/ActiveLearningPipeline/Runs"
+# Seeds
+seeds:
+  sampler: 0
+  model: 0
+  dataset: 0
+  toy_oracle: 0
+
+al:
+  mode: rl_gym_test
+  gym_env: MountainCar-v0
+  dqn_batch_size: 32

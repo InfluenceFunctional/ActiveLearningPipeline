@@ -1,0 +1,24 @@
+name: aptamer
+channels:
+  - pytorch
+  - comet_ml
+  - conda-forge
+
+dependencies:
+  - cudatoolkit=11.3
+  - python>=3.8
+  - numpy
+  - pytorch>=1.9.0
+  - scipy
+  - tqdm
+  - scikit-learn=0.24.2
+  - matplotlib=3.3.2
+  - tensorboard
+  - comet_ml=3.14.0
+  - pandas
+  - pip
+  - pyyaml
+
+  - pip:
+    - seqfold
+    - nupack

@@ -618,7 +618,7 @@ if __name__ == "__main__":
     elif config.al.mode == "train_rl":
         al.runPipeline()
     elif config.al.mode == "rl_gym_test":
-        from Agent import train_toy_agent
+        from newAgent import train_toy_agent
         train_toy_agent(config)
     '''elif config.al.mode == "rl_gym_test":
         from Agent import train_toy_agent

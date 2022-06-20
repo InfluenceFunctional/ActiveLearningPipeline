@@ -17,14 +17,14 @@ class Agent():
     def __init__(self, config) -> None:
         self.device = config.device
         #RL Params
-        self.epsilon_end = config.eps_min
-        self.epsilon_decay = config.eps_decay
-        self.epsilon = config.eps_start
+        self.epsilon_end = config.al.eps_end
+        self.epsilon_decay = config.al.eps_decay
+        self.epsilon = config.al.eps_start
 
         #Model Params
-        self.action_size = config.action_size
-        self.hidden_size = config.hidden_size
-        self.state_length = config.state_length
+        self.action_size = config.al.action_size
+        self.hidden_size = config.al.hidden_size
+        self.state_length = config.al.state_length
 
 
         self.state = None
@@ -32,14 +32,14 @@ class Agent():
         self._create_models()
 
         # Optimizer and Training Params
-        self.alpha = config.alpha
-        self.gamma = config.gamma
-        self.tau = config.tau
+        self.alpha = config.al.alpha
+        self.gamma = config.al.gamma
+        self.tau = config.al.tau
         self.optimizer = torch.optim.Adam(self.policy_net.parameters(), self.alpha)
-        self.memory = ParameterUpdateReplayMemory(config.memory_limit, device=self.device)
-        self.update_type = config.update_type
-        self.dqn_epochs = config.update_repeats
-        self.batch_size = config.dqn_batch_size
+        self.memory = ParameterUpdateReplayMemory(config.al.memory_limit, device=self.device)
+        self.update_type = config.al.update_type
+        self.dqn_epochs = config.al.dqn_epochs
+        self.batch_size = config.al.dqn_batch_size
 
     def updateState(self, state):
         self.state=torch.tensor(state)
@@ -97,42 +97,17 @@ class Agent():
             self.optimizer.step()
             self.policy_error = np.append(self.policy_error, loss.detach().cpu().numpy())
 
-def main():
-    config = SimpleNamespace(**{"gamma":0.99,
-                "lr":1e-3,
-                "min_memory_for_replay":500,
-                "eps_start":1,
-                "eps_decay":0.995,
-                "eps_min":0.01,
-                "update_step":1,
-                "batch_size":64,
-                "update_repeats":10,
-                "seed":42,
-                "max_memory_size":50000,
-                "hidden_dim":64,
-                "env_name":'CartPole-v1',
-                "num_episodes": 2000,
-                "dqn_batch_size": 64,
-                "action_size": 2,
-                "state_length": 4,
-                "hidden_size": 64,
-                "gamma": 0.95,
-                "alpha": 0.001,
-                "memory_limit": 50000,
-                "min_memory": 500,
-                "tau": 0.1,
-                "update_type": 'soft',
-                "device": 'cuda'})
+def main(config):
     agent = Agent(config)
-    env = gym.make(config.env_name)
-    torch.manual_seed(config.seed)
-    env.seed(config.seed)
+    env = gym.make(config.al.env_name)
+    torch.manual_seed(config.al.seed)
+    env.seed(config.al.seed)
 
     trial_episode_scores = []
     avg_grad_value = None
     debug_log = True
     i = 0
-    for i_episode in range(config.num_episodes):
+    for i_episode in range(config.al.episodes):
         episode_score = 0
         state = env.reset()
         agent.updateState(state)
@@ -148,7 +123,7 @@ def main():
             agent.memory.push(state, action, new_state, reward, done)
             state = new_state
             agent.updateState(state)
-        if len(agent.memory) > config.min_memory_for_replay and (i_episode % config.update_step == 0):
+        if len(agent.memory) > config.al.min_memory and (i_episode % config.al.update_steps == 0):
             i+=30
             agent.policy_error = []
             agent.train()
@@ -171,12 +146,12 @@ def main():
 
     print(i)
 
-if __name__ == '__main__':
+def train_toy_agent(config):
     import cProfile as profile
     import pstats
     prof = profile.Profile()
     prof.enable()
-    main()
+    main(config)
     stats = pstats.Stats(prof).strip_dirs().sort_stats("cumtime")
     prof.disable()
     # print profiling output

@@ -15,7 +15,7 @@ seeds:
 
 al:
   mode: rl_gym_test
-  gym_env: CartPole-v1
+  env_name: CartPole-v1
   dqn_batch_size: 64
   action_size: 2
   state_length: 4
@@ -30,3 +30,7 @@ al:
   memory_limit: 50000
   min_memory: 500
   tau: 0.1 # target network soft update hyperparameter
+  update_type: soft
+  dqn_epochs: 10
+  update_steps: 1
+  seed: 42

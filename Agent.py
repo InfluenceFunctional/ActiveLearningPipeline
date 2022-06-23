@@ -131,7 +131,6 @@ class DQN:
 
     def updateState(self):
         raise NotImplementedError("You need to implement a updateState method for this child class")
-        pass
 
     def update_target_network(self):
         """Default Target Network Update is interval based"""

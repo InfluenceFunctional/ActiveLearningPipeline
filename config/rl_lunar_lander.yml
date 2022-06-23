@@ -6,6 +6,7 @@ explicit_run_enumeration: False
 machine: "local"
 device: "cuda"
 workdir: "/mnt/d/Aptamer RL/ActiveLearningPipeline/Runs"
+exp_name: gym_lunar_lander
 # Seeds
 seeds:
   sampler: 0
@@ -15,17 +16,27 @@ seeds:
 
 al:
   mode: rl_gym_test
-  gym_env: LunarLander-v2
+  env_name: LunarLander-v2
   dqn_batch_size: 64
   action_size: 4
   state_length: 8
+  hidden_size: 128
   target_sync_interval: 50
-  episodes: 2000
-  gamma: 0.99 # discount factor
+  episodes: 100000
+  gamma: 0.95 # discount factor
   alpha: 0.001 # learning rate
+  lr_gamma: 0.99
+  lr_step: 100
   eps_start: 1 
-  eps_end: 0.01
-  eps_decay: 0.99
-  memory_limit: 50000
+  eps_end: 0.5
+  eps_decay: 0.999
+  memory_limit: 100000
   min_memory: 500
   tau: 0.1 # target network soft update hyperparameter
+  update_type: soft
+  dqn_epochs: 10
+  dqn_train_frequency: 1
+  seed: 42
+  comet:
+    project: rl-validation
+    tags: LunarLander-v2

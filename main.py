@@ -606,7 +606,7 @@ if __name__ == "__main__":
     config = process_config(config)
     print("Args:\n" + "\n".join([f"    {k:20}: {v}" for k, v in vars(config).items()]))
     # TODO: save final config in workdir
-    al = activeLearner.ActiveLearning(config)
+    #al = activeLearner.ActiveLearning(config)
     if config.al.mode == "initalize":
         printRecord("Initialized!")
     elif config.al.mode == "active learning":

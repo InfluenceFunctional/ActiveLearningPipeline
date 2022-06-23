@@ -7,8 +7,8 @@ from utils import namespace2dict
 from torch.utils import data
 import torch.nn.functional as F
 import torch
-from Agent import ParameterUpdateAgent
-from replay_buffer import ParameterUpdateReplayMemory
+from newAgent import SelectionPolicyAgent
+from replay_buffer import ReplayMemory
 import pandas as pd
 
 import numpy
@@ -26,7 +26,7 @@ class ActiveLearning:
         self.oracle = Oracle(
             self.config
         )  # oracle needs to be initialized to initialize toy datasets
-        self.agent = ParameterUpdateAgent(self.config)
+        self.agent = SelectionPolicyAgent(self.config)
         self.querier = Querier(self.config)  # might as well initialize the querier here
         self.setup()
         self.getModelSize()

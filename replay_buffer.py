@@ -55,7 +55,7 @@ class QuerySelectionReplayMemory(object):
     def __len__(self):
         return len(self.memory)
 
-class ParameterUpdateReplayMemory(object):
+class ReplayMemory(object):
     """
     Class that encapsulates the experience replay buffer, the push and sampling method
     """

@@ -32,5 +32,5 @@ al:
   tau: 0.1 # target network soft update hyperparameter
   update_type: soft
   dqn_epochs: 10
-  update_steps: 1
+  dqn_train_frequency: 1
   seed: 42

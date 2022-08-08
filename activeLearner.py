@@ -20,7 +20,6 @@ class ActiveLearning:
     def __init__(self, config):
         self.pipeIter = None
         self.homedir = os.getcwd()
-        self.episode = 0
         self.config = config
         self.runNum = self.config.run_num
         self.oracle = Oracle(
@@ -74,10 +73,10 @@ class ActiveLearning:
     def reset(self):
         os.chdir(self.homedir)
         #os.mkdir(f"{self.workDir}/ckpts")
-        os.mkdir(f"{self.workDir}/episode{self.episode}")
-        os.mkdir(f"{self.workDir}/episode{self.episode}/ckpts")
-        os.mkdir(f"{self.workDir}/episode{self.episode}/datasets")
-        os.chdir(f"{self.workDir}/episode{self.episode}")  # move to working dir
+        os.mkdir(f"{self.workDir}/episode{self.agent.episode}")
+        os.mkdir(f"{self.workDir}/episode{self.agent.episode}/ckpts")
+        os.mkdir(f"{self.workDir}/episode{self.agent.episode}/datasets")
+        os.chdir(f"{self.workDir}/episode{self.agent.episode}")  # move to working dir
         printRecord("Starting Fresh Run %d" % self.runNum)
         self.oracle.initializeDataset()  # generate toy model dataset
         self.stateDict = None
@@ -127,7 +126,7 @@ class ActiveLearning:
         :return:
         """
         self.config.dataset_size = self.config.dataset.init_length
-        for _ in range(self.config.al.episodes):
+        for _ in range(self.config.rl.episodes):
 
             if self.config.dataset.type == "toy":
                 self.sampleOracle()  # use the oracle to pre-solve the problem for future benchmarking
@@ -150,14 +149,17 @@ class ActiveLearning:
                 self.saveOutputs()  # save pipeline outputs
 
             # Train Policy Network
-            self.agent.train(BATCH_SIZE=self.config.al.q_batch_size, dqn_epochs=100, comet = self.comet, iteration=self.episode)
+            self.agent.handleTraining()
+            self.agent.handleEndofEpisode(logger=self.comet)
             if self.comet:
-                self.comet.log_metric(name='RL Cumulative Reward', value=self.model_state_cumulative_reward, step=self.episode)
-                self.comet.log_metric(name='RL Cumulative Score', value=self.model_state_cumulative_score, step=self.episode)
-                #self.comet.log_metric(name='RL Agent Training Error', value=self.agent.policy_error, step=self.episode)
-                #self.comet.log_curve(name='RL Agent Training Error', x=list(range(100)), y=self.agent.policy_error, step=self.episode)
-            if self.config.al.episodes > (self.episode + 1):  # if we are doing multiple al episodes
-                self.episode += 1
+                self.comet.log_metric(name='RL Cumulative Reward', value=self.model_state_cumulative_reward, step=self.agent.episode)
+                self.comet.log_metric(name='RL Cumulative Score', value=self.model_state_cumulative_score, step=self.agent.episode)
+                self.comet.log_metric(name = "RL Dataset Cumulative Score", value = self.dataset_cumulative_score, step=self.agent.episode)
+
+                #self.comet.log_metric(name='RL Agent Training Error', value=self.agent.policy_error, step=self.agent.episode)
+                #self.comet.log_curve(name='RL Agent Training Error', x=list(range(100)), y=self.agent.policy_error, step=self.agent.episode)
+            if self.config.rl.episodes > (self.agent.episode + 1):  # if we are doing multiple al episodes
+                self.agent.episode += 1
                 self.reset()
 
 
@@ -185,7 +187,7 @@ class ActiveLearning:
         if self.terminal == 0: # skip querying if this is our final pipeline iteration
 
             t0 = time.time()
-            query = self.querier.buildQuery(self.model, self.stateDict, action=self.action, comet=self.comet)  # pick Samples to be scored
+            query = self.querier.buildQuery(self.model, self.stateDict, action=self.agent.action_to_map(self.action), comet=self.comet)  # pick Samples to be scored
             printRecord('Query generation took {} seconds'.format(int(time.time()-t0)))
 
             t0 = time.time()
@@ -200,11 +202,11 @@ class ActiveLearning:
 
 
         # CODE FOR LEARNED POLICY
-        if self.config.al.hyperparams_learning:# and (self.pipeIter > 0):
+        if self.config.al.hyperparams_learning and (self.pipeIter > 0):
             model_state_prev, model_state_curr = self.agent.updateState(self.stateDict, self.model)
-            if model_state_prev is not None:
+            if model_state_prev is not None and self.action is not None:
                 self.agent.push_to_buffer(model_state_prev, self.action, model_state_curr, self.model_state_reward, self.terminal)
-            self.action = self.agent.getAction()
+            self.action = self.agent.select_action()
         else:
             self.action = None
 
@@ -721,7 +723,7 @@ class ActiveLearning:
                 outputDict['dataset score record'] = self.dataset_abs_score
                 outputDict['dataset cumulative score'] = self.dataset_cumulative_score,
                 outputDict['dataset per sample cumulative score'] = self.dataset_normed_cumulative_score
-        np.save('outputsDict', outputDict)
+        np.save('outputsDict', outputDict) # Need to use .item() when loading to get the data
 
 
     def updateDataset(self, oracleSequences, oracleScores):

@@ -4,6 +4,7 @@ import numpy as np
 from torch import nn
 import os
 import random
+import time
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import StepLR
 from RLmodels import MLP
@@ -22,18 +23,17 @@ class DQN():
         self.device = config.device
         self.load = False
         self.exp_name = config.exp_name
-
+        self.log_rl_to_console = config.rl.log_rl_to_console
         # RL Properties
-        self.epsilon_end = config.al.eps_end
-        self.epsilon_decay = config.al.eps_decay
-        self.epsilon = config.al.eps_start
-        self.gamma = config.al.gamma
-        self.tau = config.al.tau
-        self.dqn_train_frequency = config.al.dqn_train_frequency
-        self.memory = ReplayMemory(config.al.memory_limit, device=self.device)
-        self.update_type = config.al.update_type
-        self.dqn_epochs = config.al.dqn_epochs
-        self.batch_size = config.al.dqn_batch_size
+        self.epsilon_end = config.rl.eps_end
+        self.epsilon_decay = config.rl.eps_decay
+        self.epsilon = config.rl.eps_start
+        self.gamma = config.rl.gamma
+        self.tau = config.rl.tau
+        self.dqn_train_frequency = config.rl.dqn_train_frequency
+        self.memory = ReplayMemory(config.rl.buffer_size, device=self.device)
+        self.dqn_epochs = config.rl.dqn_epochs
+        self.batch_size = config.rl.dqn_batch_size
 
         # Agent Properties
         self.episode = 0
@@ -42,7 +42,8 @@ class DQN():
         self.state = None
 
         # Optimizer and Training Properties
-        self.alpha = config.al.alpha
+        self.alpha = config.rl.alpha
+        self.max_grad_norm = config.rl.max_grad_norm
         self.optimizer_param = {
             "opt_choice": config.querier.opt,
             "momentum": config.querier.momentum,
@@ -53,8 +54,8 @@ class DQN():
             "load_opt": self.load,
             "lr_dqn": self.alpha
         }
-        self.lr_step = config.al.lr_step
-        self.lr_gamma = config.al.lr_gamma
+        self.lr_step = config.rl.lr_step
+        self.lr_gamma = config.rl.lr_gamma
 
     def _load_models(self, file_name="policy_agent"):
         """Load trained policy agent for experiments. Needs to know file_name. File expected in
@@ -119,11 +120,8 @@ class DQN():
         self.memory.push(state, action, next_state, reward, terminal)
 
     def update_target_network(self):
-        if self.update_type == 'hard':
-            self.target_net.load_state_dict(self.policy_net.state_dict())
-        else:
-            for target_param, param in zip(self.target_net.parameters(), self.policy_net.parameters()):
-                target_param.data.copy_(target_param.data * (1.0 - self.tau) + param.data * self.tau)
+        for target_param, param in zip(self.target_net.parameters(), self.policy_net.parameters()):
+            target_param.data.copy_(target_param.data * (1.0 - self.tau) + param.data * self.tau)
 
     def update_epsilon(self):
         self.epsilon = max(self.epsilon * self.epsilon_decay, self.epsilon_end)
@@ -153,10 +151,12 @@ class DQN():
 
             expected_q_value = rewards + self.gamma * next_q_value * (1 - is_done*1)
 
-            loss = (q_value - expected_q_value.detach()).pow(2).mean()
-
+            #loss = (q_value - expected_q_value.detach()).pow(2).mean()
+            loss = F.smooth_l1_loss(q_value, expected_q_value)
             self.optimizer.zero_grad()
             loss.backward()
+            # Clip gradient norm
+            torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), self.max_grad_norm)
             self.optimizer.step()
             self.policy_error = np.append(self.policy_error, loss.detach().cpu().numpy())
 
@@ -174,50 +174,55 @@ class DQN():
 class SelectionPolicyAgent(DQN):
     def __init__(self, config):
         super().__init__(config)
-
-        #Model Specific Params
-        self.action_size = config.al.action_size
-        self.hidden_size = config.al.hidden_size
-        self.state_length = config.al.state_length
-
+        self.trial_episode_scores = []
+        self.avg_grad_value = None
         #State Specific Params
         self.singleton_state_variables = (
             5  # [test loss, test std, n proxy models, cluster cutoff and elapsed time]
         )
-        self.state_dataset_size = int(
+        self.state_length = int(
             config.querier.model_state_size * 5 + self.singleton_state_variables
         )  # This depends on size of dataset
-        self.model_state = None
 
-        # Create Model and Optimizer
+        #Model Specific Params
+        self.action_size = config.rl.action_size
+        self.hidden_size = config.rl.hidden_size
+
+        #Create (and load) Model and Optimizer
         self._create_models()
         if self.load:
             self._load_models()
+
         self._create_and_load_optimizer(**self.optimizer_param)
+        self.scheduler = StepLR(self.optimizer, step_size=self.lr_step, gamma=self.lr_gamma)
 
     def _create_models(self):
         """Creates the Online and Target DQNs
         """
         # Query network (and target network for DQN)
-        self.policy_net = MLP(self.state_length, self.action_size, self.hidden_size).to(self.device)
-        self.target_net = MLP(self.state_length, self.action_size, self.hidden_size).to(self.device)
+        self.policy_net = MLP(self.state_length, self.action_size, self.hidden_size).to(self.device).double()
+        self.target_net = MLP(self.state_length, self.action_size, self.hidden_size).to(self.device).double()
         self.target_net.load_state_dict(self.policy_net.state_dict())  # sync parameters.
         for param in self.target_net.parameters():
             param.requires_grad = False
         printRecord("Policy network has " + str(get_n_params(self.policy_net)) + " parameters.")
 
         # print("DQN Models created!")
-    def updateState(self, model_state, model):
+
+    #def select_action(self):
+    #    return self.action_to_map(super().select_action())
+
+    def updateState(self, state, model):
         """
         update the model state and store it for later sampling
-        :param model_state:
+        :param state:
         :return:
         """
-        model_state_dict = model_state
-        previous_model_state = self.model_state
+        model_state_dict = state
+        previous_model_state = self.state
         # things to put into the model state
         # test loss and standard deviation between models
-        self.model_state = torch.stack(
+        self.state = torch.stack(
             (
                 torch.tensor(model_state_dict["test loss"]),
                 torch.tensor(model_state_dict["test std"]),
@@ -225,24 +230,24 @@ class SelectionPolicyAgent(DQN):
         )
 
         # sample energies
-        self.model_state = torch.cat(
-            (self.model_state, torch.tensor(model_state_dict["best energies"]))
+        self.state = torch.cat(
+            (self.state, torch.tensor(model_state_dict["best energies"]))
         )
 
         # sample uncertainties
-        self.model_state = torch.cat(
-            (self.model_state, torch.Tensor(model_state_dict["best uncertanties"]))
+        self.state = torch.cat(
+            (self.state, torch.Tensor(model_state_dict["best uncertanties"]))
         )
 
         # internal dist, dataset dist, random set dist
-        self.model_state = torch.cat(
-            (self.model_state, torch.tensor(model_state_dict["best samples internal diff"]))
+        self.state = torch.cat(
+            (self.state, torch.tensor(model_state_dict["best samples internal diff"]))
         )
-        self.model_state = torch.cat(
-            (self.model_state, torch.tensor(model_state_dict["best samples dataset diff"]))
+        self.state = torch.cat(
+            (self.state, torch.tensor(model_state_dict["best samples dataset diff"]))
         )
-        self.model_state = torch.cat(
-            (self.model_state, torch.tensor(model_state_dict["best samples random set diff"]))
+        self.state = torch.cat(
+            (self.state, torch.tensor(model_state_dict["best samples random set diff"]))
         )
 
         # n proxy models,         # clustering cutoff,         # progress fraction
@@ -254,8 +259,8 @@ class SelectionPolicyAgent(DQN):
             )
         )
 
-        self.model_state = torch.cat((self.model_state, singletons))
-        self.model_state = self.model_state.to(self.device)
+        self.state = torch.cat((self.state, singletons))
+        self.state = self.state.to(self.device)
 
         self.proxyModel = model  # this should already be on correct device - passed directly from the main program
 
@@ -277,10 +282,54 @@ class SelectionPolicyAgent(DQN):
         )  # get large random dataset
         self.randomSamples = self.randomSamples["samples"]
 
-        return previous_model_state, self.model_state
+        return previous_model_state, self.state
 
-    def evaluate(self, sample, output="Average"):  # just evaluate the proxy
-        return self.proxyModel.evaluate(sample, output=output)
+    def action_to_map(self, action_id):
+        action = torch.zeros(self.action_size, dtype=int)
+        action[action_id] = 1
+        return action
+
+    def evaluateProxyModel(self, output="Average"):  # just evaluate the proxy
+        return self.proxyModel.evaluate(self.randomSamples, output=output)
+
+    def handleTraining(self):
+        if len(self.memory) >= self.config.rl.min_memory and (self.episode % self.config.rl.dqn_train_frequency == 0):
+            self.train()
+            self.update_target_network()
+            self.avg_grad_value = torch.mean(torch.stack([torch.mean(abs(param.grad)) for param in self.policy_net.parameters()]))
+
+        elif len(self.memory) <= self.config.rl.min_memory:
+            Warning('Replay Buffer not populated enough')
+
+
+    def handleEndofEpisode(self, logger):
+
+        ## Update epsilon and learning rate
+        self.scheduler.step()
+        self.update_epsilon()
+
+        episode_score = self.evaluateProxyModel().mean()
+
+        ## Logging
+        avg_param_value = torch.mean(torch.stack([torch.mean(abs(param)) for param in self.policy_net.parameters()]))
+        self.trial_episode_scores += [episode_score]
+        last_100_avg = np.mean(self.trial_episode_scores[-100:])
+        if self.log_rl_to_console:
+            if self.avg_grad_value:
+                print(f'E {self.episode} scored {episode_score:.2f}, avg {last_100_avg:.2f}, avg param {avg_param_value:.2f}', end = ', ')
+                print(f'avg_grad {self.avg_grad_value:.2f} avg_loss {np.mean(self.policy_error):.2f}')
+            else:
+                print(f'E {self.episode} scored {episode_score:.2f}, avg {last_100_avg:.2f}, avg param {avg_param_value:.2f}')
+        if (self.episode % self.config.rl.eval_interval == 0):
+            mean_eval_score = self.evaluateProxyModel().mean()
+            logger.log_metric(name='Mean Eval Score', value=mean_eval_score, step=self.episode)
+
+        logger.log_metric(name='Learning Rate', value=self.scheduler.get_last_lr(), step=self.episode)
+        logger.log_metric(name='Episode Score', value=episode_score, step=self.episode)
+        logger.log_metric(name='Moving Score Average (100 eps)', value=last_100_avg, step=self.episode)
+        logger.log_metric(name='Mean Gradient Value', value=self.avg_grad_value, step=self.episode)
+        logger.log_metric(name='Mean Weight Value', value=avg_param_value, step=self.episode)
+        logger.log_metric(name='Mean Training Replay Loss', value=np.mean(self.policy_error), step=self.episode)
 
 
 class BasicAgent(DQN):
@@ -289,9 +338,9 @@ class BasicAgent(DQN):
         super().__init__(config)
 
         #Model Specific Params
-        self.action_size = config.al.action_size
-        self.hidden_size = config.al.hidden_size
-        self.state_length = config.al.state_length
+        self.action_size = config.rl.action_size
+        self.hidden_size = config.rl.hidden_size
+        self.state_length = config.rl.state_length
 
         #Create (and load) Model and Optimizer
         self._create_models()
@@ -315,32 +364,51 @@ class BasicAgent(DQN):
     def updateState(self, state):
         self.state=torch.tensor(state)
 
+    def evaluate(self, env):
+        """Get average reward using the current policy"""
+        rewards = []
+        for i, x in enumerate(range(20)):
+            state = env.reset()
+            done = False
+            episode_score = 0
+            while not done:
+                if i==0:
+                    env.render()
+                    time.sleep(.001)
+                with torch.no_grad():
+                    q_values = self.policy_net(torch.Tensor(state).to(self.device))
+                    action = np.argmax(q_values.cpu().numpy())
+                state, reward, done, _ = env.step(action)
+                episode_score += reward
+            rewards += [episode_score]
+        return np.mean(rewards)
+
 def main(config):
     agent = BasicAgent(config)
-    env = gym.make(config.al.env_name)
-    torch.manual_seed(config.al.seed)
-    env.seed(config.al.seed)
-    logger = Experiment(project_name=config.al.comet.project, display_summary_level=0,)
-    if config.al.comet.tags:
-        if isinstance(config.al.comet.tags, list):
-            logger.add_tags(config.al.comet.tags)
+    env = gym.make(config.rl.env_name)
+    torch.manual_seed(config.rl.seed)
+    env.seed(config.rl.seed)
+    logger = Experiment(project_name=config.rl.comet.project, display_summary_level=0,)
+    if config.rl.comet.tags:
+        if isinstance(config.rl.comet.tags, list):
+            logger.add_tags(config.rl.comet.tags)
         else:
-            logger.add_tag(config.al.comet.tags)
+            logger.add_tag(config.rl.comet.tags)
     hyperparams = vars(config.al)
     hyperparams.pop('comet')
     logger.log_parameters(vars(config.al))
     trial_episode_scores = []
     avg_grad_value = None
     debug_log = True
-    i = 0
-    for i_episode in range(config.al.episodes):
+
+    for i_episode in range(config.rl.episodes):
         episode_score = 0
         state = env.reset()
         agent.updateState(state)
         done = False
-
+        episode_length = 0
         while not done:
-            i += 1
+            episode_length += 1
             action = agent.select_action()
             new_state, reward, done, _ = env.step(action)
             episode_score += reward
@@ -349,8 +417,7 @@ def main(config):
             agent.memory.push(state, action, new_state, reward, done)
             state = new_state
             agent.updateState(state)
-        if len(agent.memory) > config.al.min_memory and (i_episode % config.al.dqn_train_frequency == 0):
-            i+=30
+        if len(agent.memory) >= config.rl.min_memory and (i_episode % config.rl.dqn_train_frequency == 0) and i_episode >= config.rl.learning_start:
             agent.policy_error = []
             agent.train()
             agent.update_target_network()
@@ -367,19 +434,22 @@ def main(config):
         last_100_avg = np.mean(trial_episode_scores[-100:])
         if debug_log:
             if avg_grad_value:
-                print(f'E {i_episode} scored {episode_score}, avg {last_100_avg:.2f}, avg param {avg_param_value:.2f}', end = ', ')
+                print(f'E {i_episode} scored {episode_score:.2f}, ep_length {episode_length}, avg {last_100_avg:.2f}, avg param {avg_param_value:.2f}', end = ', ')
                 print(f'avg_grad {avg_grad_value:.2f} avg_loss {np.mean(agent.policy_error):.2f}')
             else:
-                print(f'E {i_episode} scored {episode_score}, avg {last_100_avg:.2f}, avg param {avg_param_value:.2f}')
+                print(f'E {i_episode} scored {episode_score:.2f}, ep_length {episode_length}, avg {last_100_avg:.2f}, avg param {avg_param_value:.2f}')
+        if (i_episode % config.rl.eval_interval == 0):
+            mean_eval_score = agent.evaluate(env)
+            logger.log_metric(name='Mean Eval Score', value=mean_eval_score, step=i_episode)
 
         logger.log_metric(name='Learning Rate', value=agent.scheduler.get_last_lr(), step=i_episode)
+        logger.log_metric(name='Episode Duration', value=episode_length, step=i_episode)
         logger.log_metric(name='Episode Score', value=episode_score, step=i_episode)
         logger.log_metric(name='Moving Score Average (100 eps)', value=last_100_avg, step=i_episode)
         logger.log_metric(name='Mean Gradient Value', value=avg_grad_value, step=i_episode)
         logger.log_metric(name='Mean Weight Value', value=avg_param_value, step=i_episode)
         logger.log_metric(name='Mean Training Replay Loss', value=np.mean(agent.policy_error), step=i_episode)
 
-    print(i)
 
 def train_toy_agent(config):
     import cProfile as profile

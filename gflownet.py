@@ -20,8 +20,8 @@ from torch.distributions.categorical import Categorical
 from tqdm import tqdm
 
 from aptamers import AptamerSeq
-from oracle import numbers2letters, Oracle
-from utils import get_config, namespace2dict, numpy2python, add_bool_arg
+from oracle import Oracle
+from utils import get_config, namespace2dict, numpy2python, add_bool_arg, numbers2letters
 
 # Float and Long tensors
 _dev = [torch.device("cpu")]
@@ -72,9 +72,7 @@ def add_args(parser):
     args2config.update({"rng_seed": ["seeds", "gflownet"]})
     # dataset
     parser = add_bool_arg(parser, "nupack_energy_reweighting", default=False)
-    args2config.update(
-        {"nupack_energy_reweighting": ["dataset", "nupack_energy_reweighting"]}
-    )
+    args2config.update({"nupack_energy_reweighting": ["dataset", "nupack_energy_reweighting"]})
     parser.add_argument(
         "--nupack_target_motif",
         type=str,
@@ -108,9 +106,7 @@ def add_args(parser):
         type=float,
     )
     args2config.update({"ema_alpha": ["gflownet", "ema_alpha"]})
-    parser.add_argument(
-        "--learning_rate", default=1e-4, help="Learning rate", type=float
-    )
+    parser.add_argument("--learning_rate", default=1e-4, help="Learning rate", type=float)
     args2config.update({"learning_rate": ["gflownet", "learning_rate"]})
     parser.add_argument("--opt", default="adam", type=str)
     args2config.update({"opt": ["gflownet", "opt"]})
@@ -231,9 +227,7 @@ def add_args(parser):
     # Comet
     parser.add_argument("--comet_project", default=None, type=str)
     args2config.update({"comet_project": ["gflownet", "comet", "project"]})
-    parser.add_argument(
-        "-t", "--tags", nargs="*", help="Comet.ml tags", default=[], type=str
-    )
+    parser.add_argument("-t", "--tags", nargs="*", help="Comet.ml tags", default=[], type=str)
     args2config.update({"tags": ["gflownet", "comet", "tags"]})
     parser.add_argument("--no_comet", action="store_true")
     args2config.update({"no_comet": ["gflownet", "comet", "skip"]})
@@ -355,9 +349,7 @@ class GFlowNetAgent:
         if args.gflownet.model_ckpt:
             if "workdir" in args and Path(args.workdir).exists():
                 if (Path(args.workdir) / "ckpts").exists():
-                    self.model_path = (
-                        Path(args.workdir) / "ckpts" / args.gflownet.model_ckpt
-                    )
+                    self.model_path = Path(args.workdir) / "ckpts" / args.gflownet.model_ckpt
                 else:
                     self.model_path = Path(args.workdir) / args.gflownet.model_ckpt
             else:
@@ -578,10 +570,7 @@ class GFlowNetAgent:
         loginf = tf([1000])
         batch_idxs = tl(
             sum(
-                [
-                    [i] * len(parents)
-                    for i, (parents, _, _, _, _, _, _) in enumerate(batch)
-                ],
+                [[i] * len(parents) for i, (parents, _, _, _, _, _, _) in enumerate(batch)],
                 [],
             )
         )
@@ -606,9 +595,7 @@ class GFlowNetAgent:
 
         # log(eps + exp(log(Q(s,a)))) : qsa
         in_flow = torch.log(
-            tf(torch.zeros((sp.shape[0],))).index_add_(
-                0, batch_idxs, torch.exp(parents_Qsa)
-            )
+            tf(torch.zeros((sp.shape[0],))).index_add_(0, batch_idxs, torch.exp(parents_Qsa))
         )
         # the following with work if autoregressive
         #         in_flow = torch.logaddexp(parents_Qsa[batch_idxs], torch.log(self.loss_eps))
@@ -624,9 +611,7 @@ class GFlowNetAgent:
         loss = (in_flow - out_flow).pow(2).mean()
 
         with torch.no_grad():
-            term_loss = ((in_flow - out_flow) * done).pow(2).sum() / (
-                done.sum() + 1e-20
-            )
+            term_loss = ((in_flow - out_flow) * done).pow(2).sum() / (done.sum() + 1e-20)
             flow_loss = ((in_flow - out_flow) * (1 - done)).pow(2).sum() / (
                 (1 - done).sum() + 1e-20
             )
@@ -663,13 +648,11 @@ class GFlowNetAgent:
         # Unpack batch
         parents, actions, rewards, _, done, traj_id, _ = map(torch.cat, zip(*batch))
         # Log probs of each (s, a)
-        logprobs = self.logsoftmax(self.model(parents))[
-            torch.arange(parents.shape[0]), actions
-        ]
+        logprobs = self.logsoftmax(self.model(parents))[torch.arange(parents.shape[0]), actions]
         # Sum of log probs
-        sumlogprobs = tf(
-            torch.zeros(len(torch.unique(traj_id, sorted=True)))
-        ).index_add_(0, traj_id, logprobs)
+        sumlogprobs = tf(torch.zeros(len(torch.unique(traj_id, sorted=True)))).index_add_(
+            0, traj_id, logprobs
+        )
         # Sort rewards of done sequences by ascending traj id
         rewards = rewards[done.eq(1)][torch.argsort(traj_id[done.eq(1)])]
         # Trajectory balance loss
@@ -726,9 +709,7 @@ class GFlowNetAgent:
                 else:
                     losses[0].backward()
                     if self.clip_grad_norm > 0:
-                        torch.nn.utils.clip_grad_norm_(
-                            self.parameters(), self.clip_grad_norm
-                        )
+                        torch.nn.utils.clip_grad_norm_(self.parameters(), self.clip_grad_norm)
                     self.opt.step()
                     self.opt.zero_grad()
                     all_losses.append([i.item() for i in losses])
@@ -746,9 +727,7 @@ class GFlowNetAgent:
                     env.reward_beta = self.reward_beta
             # Log
             seqs_batch = [
-                tuple(self.env.obs2seq(d[3][0].tolist()))
-                for d in data
-                if bool(d[4].item())
+                tuple(self.env.obs2seq(d[3][0].tolist())) for d in data if bool(d[4].item())
             ]
             idx_best = np.argmax(rewards)
             seq_best = "".join(self.env.seq2letters(seqs_batch[idx_best]))
@@ -759,9 +738,7 @@ class GFlowNetAgent:
             else:
                 all_visited.extend(seqs_batch)
             if self.comet:
-                self.comet.log_text(
-                    seq_best + " / proxy: {}".format(proxy_vals[idx_best]), step=i
-                )
+                self.comet.log_text(seq_best + " / proxy: {}".format(proxy_vals[idx_best]), step=i)
                 self.comet.log_metrics(
                     dict(
                         zip(
@@ -799,9 +776,7 @@ class GFlowNetAgent:
                     }
                 )
                 # TODO: this could be done just once and store it
-                for seqstr, score in tqdm(
-                    zip(self.df_test.letters, self.df_test[self.test_score])
-                ):
+                for seqstr, score in tqdm(zip(self.df_test.letters, self.df_test[self.test_score])):
                     t0_test_traj = time.time()
                     traj_list, actions = self.env.get_trajectories(
                         [[self.env.letters2seq(seqstr)]],
@@ -847,9 +822,7 @@ class GFlowNetAgent:
                 dict_topk = {}
                 for k in self.oracle_k:
                     mean_topk = np.mean(scores_sorted[:k])
-                    dict_topk.update(
-                        {"oracle_mean_top{}{}".format(k, self.al_iter): mean_topk}
-                    )
+                    dict_topk.update({"oracle_mean_top{}{}".format(k, self.al_iter): mean_topk})
                     if self.comet:
                         self.comet.log_metrics(dict_topk)
             if not i % 100:
@@ -902,16 +875,9 @@ class GFlowNetAgent:
                 torch.save(self.model.state_dict(), path)
             # Moving average of the loss for early stopping
             if loss_term_ema and loss_flow_ema:
-                loss_term_ema = (
-                    self.ema_alpha * losses[1] + (1.0 - self.ema_alpha) * loss_term_ema
-                )
-                loss_flow_ema = (
-                    self.ema_alpha * losses[2] + (1.0 - self.ema_alpha) * loss_flow_ema
-                )
-                if (
-                    loss_term_ema < self.early_stopping
-                    and loss_flow_ema < self.early_stopping
-                ):
+                loss_term_ema = self.ema_alpha * losses[1] + (1.0 - self.ema_alpha) * loss_term_ema
+                loss_flow_ema = self.ema_alpha * losses[2] + (1.0 - self.ema_alpha) * loss_flow_ema
+                if loss_term_ema < self.early_stopping and loss_flow_ema < self.early_stopping:
                     break
             else:
                 loss_term_ema = losses[1]
@@ -1000,9 +966,7 @@ class GFlowNetAgent:
 
         if get_uncertainties:
             if self.query_function == "fancy_acquisition":
-                scores, proxy_vals, uncertainties = env.proxy(
-                    batch, "fancy_acquisition"
-                )
+                scores, proxy_vals, uncertainties = env.proxy(batch, "fancy_acquisition")
             else:
                 proxy_vals, uncertainties = env.proxy(batch, "Both")
                 scores = proxy_vals
@@ -1139,10 +1103,7 @@ class RandomTrajAgent:
             # - For each e in envs, if corresponding done is False
             #   - For each element i in env, and a in acts
             #     - i.step(a)
-            step = [
-                i.step(a)
-                for i, a in zip([e for d, e in zip(done, self.envs) if not d], acts)
-            ]
+            step = [i.step(a) for i, a in zip([e for d, e in zip(done, self.envs) if not d], acts)]
             c = count(0)
             m = {j: next(c) for j in range(mbsize) if not done[j]}
             done = [bool(d or step[m[i]][2]) for i, d in enumerate(done)]
@@ -1202,9 +1163,7 @@ def make_opt(params, Z, args):
                 }
             )
     elif args.gflownet.opt == "msgd":
-        opt = torch.optim.SGD(
-            params, args.gflownet.learning_rate, momentum=args.gflownet.momentum
-        )
+        opt = torch.optim.SGD(params, args.gflownet.learning_rate, momentum=args.gflownet.momentum)
     return opt
 
 
@@ -1276,8 +1235,7 @@ def make_approx_uniform_test_set(
         np.random.seed(seed)
     df_base = pd.read_csv(path_base_dataset, index_col=0)
     df_base = df_base.loc[
-        (df_base["letters"].map(len) >= min_length)
-        & (df_base["letters"].map(len) <= max_length)
+        (df_base["letters"].map(len) >= min_length) & (df_base["letters"].map(len) <= max_length)
     ]
     scores_base = df_base[score].values
     min_base = scores_base.min()
@@ -1391,17 +1349,12 @@ if __name__ == "__main__":
     config = process_config(config)
     print("Config file: " + config.yaml_config)
     print("Working dir: " + config.workdir)
-    print(
-        "Config:\n"
-        + "\n".join([f"    {k:20}: {v}" for k, v in vars(config.gflownet).items()])
-    )
+    print("Config:\n" + "\n".join([f"    {k:20}: {v}" for k, v in vars(config.gflownet).items()]))
     if "workdir" in config:
         if not Path(config.workdir).exists() or config.overwrite_workdir:
             Path(config.workdir).mkdir(parents=True, exist_ok=True)
             with open(config.workdir + "/config.yml", "w") as f:
-                yaml.dump(
-                    numpy2python(namespace2dict(config)), f, default_flow_style=False
-                )
+                yaml.dump(numpy2python(namespace2dict(config)), f, default_flow_style=False)
             torch.set_num_threads(1)
             main(config)
         else:

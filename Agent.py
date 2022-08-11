@@ -8,11 +8,8 @@ import numpy as np
 import os
 import random
 import torch
-from tqdm import tqdm
-import math
-import torch.functional as F
 
-#from torch.utils.tensorboard import SummaryWriter
+# from torch.utils.tensorboard import SummaryWriter
 from utils import *
 from replay_buffer import QuerySelectionReplayMemory, ParameterUpdateReplayMemory
 from oracle import Oracle
@@ -43,7 +40,7 @@ class DQN:
         """
 
         torch.manual_seed(config.seeds.model)
-        #self.writer = SummaryWriter(log_dir=f"C:/Users/Danny/Desktop/ActiveLearningPipeline/logs/exp{datetime.now().strftime('D%Y-%m-%dT%H-%M-%S')}")
+        # self.writer = SummaryWriter(log_dir=f"C:/Users/Danny/Desktop/ActiveLearningPipeline/logs/exp{datetime.now().strftime('D%Y-%m-%dT%H-%M-%S')}")
         self.config = config
         self.device = config.device
         self.target_sync_interval = config.al.target_sync_interval
@@ -59,7 +56,6 @@ class DQN:
         self.gamma = config.al.gamma
         self.tau = config.al.tau
 
-
         self.optimizer_param = {
             "opt_choice": config.querier.opt,
             "momentum": config.querier.momentum,
@@ -68,10 +64,8 @@ class DQN:
             "exp_name": self.exp_name,
             "snapshot": 0,
             "load_opt": self.load,
-            "lr_dqn": self.alpha
+            "lr_dqn": self.alpha,
         }
-
-
 
     def _load_models(self, file_name="policy_agent"):
         """Load trained policy agent for experiments. Needs to know file_name. File expected in
@@ -87,7 +81,9 @@ class DQN:
 
     def _create_models(self):
         """Placeholder for _create_models"""
-        raise NotImplementedError("You need to implement a _create_models method for this child class")
+        raise NotImplementedError(
+            "You need to implement a _create_models method for this child class"
+        )
 
     def _create_and_load_optimizer(
         self,
@@ -104,17 +100,11 @@ class DQN:
         opt_kwargs = {"lr": lr_dqn, "weight_decay": wd, "momentum": momentum}
 
         if opt_choice == "SGD":
-            self.optimizer = torch.optim.SGD(
-                self.policy_net.parameters(), **opt_kwargs
-            )
-        elif opt_choice =="Adam":
-            self.optimizer = torch.optim.Adam(
-                self.policy_net.parameters(), lr_dqn
-            )
+            self.optimizer = torch.optim.SGD(self.policy_net.parameters(), **opt_kwargs)
+        elif opt_choice == "Adam":
+            self.optimizer = torch.optim.Adam(self.policy_net.parameters(), lr_dqn)
         elif opt_choice == "RMSprop":
-            self.optimizer = torch.optim.RMSprop(
-                self.policy_net.parameters(), lr_dqn
-            )
+            self.optimizer = torch.optim.RMSprop(self.policy_net.parameters(), lr_dqn)
 
         name = exp_name_toload if load_opt and len(exp_name_toload) > 0 else exp_name
         opt_policy_path = os.path.join(ckpt_path, name, "opt_policy_" + str(snapshot))
@@ -174,7 +164,6 @@ class DQN:
         action[action_id] = 1
         return action
 
-
     def train(self, BATCH_SIZE=32, GAMMA=0.99, dqn_epochs=20, comet=None, iteration=None):
         """Train a q-function estimator on a minibatch.
 
@@ -195,7 +184,13 @@ class DQN:
         for _ in range(dqn_epochs):
 
             # Get Batch
-            state_batch, action_batch, next_states_batch, reward_batch, terminal_batch  = self.memory.sample(BATCH_SIZE)
+            (
+                state_batch,
+                action_batch,
+                next_states_batch,
+                reward_batch,
+                terminal_batch,
+            ) = self.memory.sample(BATCH_SIZE)
 
             # Get Predicted Q-values at s_t
             q_values = self.policy_net(state_batch)
@@ -204,27 +199,28 @@ class DQN:
             # that yields the highest discounted return
             next_q_values = self.policy_net(next_states_batch)
             next_q_state_values = self.target_net(next_states_batch)
-            next_q_value = next_q_state_values.gather(1, torch.max(next_q_values, 1)[1].unsqueeze(1)).squeeze(1)
+            next_q_value = next_q_state_values.gather(
+                1, torch.max(next_q_values, 1)[1].unsqueeze(1)
+            ).squeeze(1)
             q_value = q_values.gather(1, action_batch.unsqueeze(1)).squeeze(1)
 
             # Compute the Target Q values (No future return if terminal).
             # Use Bellman Equation which essentially states that sum of r_t+1 and the max_q_value at time t+1
             # is the target/expected value of the Q-function at time t.
-            expected_q_value = reward_batch + GAMMA * next_q_value * (1 - terminal_batch*1)
+            expected_q_value = reward_batch + GAMMA * next_q_value * (1 - terminal_batch * 1)
 
             # Compute MSE loss Comparing Q(s) obtained from Online Policy to
             # target Q value (Q'(s)) obtained from Target Network + Bellman Equation
-            #loss = torch.nn.functional.mse_loss(q_value, expected_q_value)
+            # loss = torch.nn.functional.mse_loss(q_value, expected_q_value)
             loss = (q_value - expected_q_value.detach()).pow(2).mean()
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
 
-
             self.policy_error = np.append(self.policy_error, loss.detach().cpu().numpy())
             # Optional Comet Logging
             if comet:
-                comet.log_metric('RL Error', loss, step=self.episode)
+                comet.log_metric("RL Error", loss, step=self.episode)
 
 
 class ParameterUpdateAgent(DQN):
@@ -250,9 +246,7 @@ class ParameterUpdateAgent(DQN):
         self._create_and_load_optimizer(**self.optimizer_param)
 
     def _create_models(self):
-        """Creates the Online and Target DQNs
-
-        """
+        """Creates the Online and Target DQNs"""
         # Query network (and target network for DQN)
         self.policy_net = ParameterUpdateDQN(
             model_state_length=self.state_dataset_size,
@@ -270,6 +264,7 @@ class ParameterUpdateAgent(DQN):
         printRecord("Policy network has " + str(get_n_params(self.policy_net)) + " parameters.")
 
         # print("DQN Models created!")
+
     def updateState(self, model_state, model):
         """
         update the model state and store it for later sampling
@@ -332,7 +327,7 @@ class ParameterUpdateAgent(DQN):
         self.trainingSamples = self.trainingSamples["samples"]
         # large random sample
         numSamples = min(
-            int(1e4), self.config.dataset.dict_size ** self.config.dataset.max_length // 100
+            int(1e4), self.config.dataset.dict_size**self.config.dataset.max_length // 100
         )  # either 1e4, or 1% of the sample space, whichever is smaller
         dataoracle = Oracle(self.config)
         self.randomSamples = dataoracle.initializeDataset(
@@ -344,8 +339,6 @@ class ParameterUpdateAgent(DQN):
 
     def evaluate(self, sample, output="Average"):  # just evaluate the proxy
         return self.proxyModel.evaluate(sample, output=output)
-
-
 
     # def test_rl(self):
     # Oracle
@@ -382,24 +375,25 @@ class BasicAgent(DQN):
             self._load_models()
         self._create_and_load_optimizer(**self.optimizer_param)
         self.activation = {}
-        #self.policy_net.fc2.register_forward_hook(self.get_activation('fc2'))
-        self.update_type = 'soft'
+        # self.policy_net.fc2.register_forward_hook(self.get_activation('fc2'))
+        self.update_type = "soft"
 
     def update_target_network(self):
-        if self.update_type == 'hard':
+        if self.update_type == "hard":
             self.target_net.load_state_dict(self.policy_net.state_dict())
         else:
-            for target_param, param in zip(self.target_net.parameters(), self.policy_net.parameters()):
-                target_param.data.copy_(target_param.data * (1.0 - self.tau) + param.data * self.tau)
+            for target_param, param in zip(
+                self.target_net.parameters(), self.policy_net.parameters()
+            ):
+                target_param.data.copy_(
+                    target_param.data * (1.0 - self.tau) + param.data * self.tau
+                )
 
     def update_epsilon(self):
         self.epsilon = max(self.epsilon * self.epsilon_decay, self.epsilon_end)
 
-
     def _create_models(self):
-        """Creates the Online and Target DQNs
-
-        """
+        """Creates the Online and Target DQNs"""
         # Query network (and target network for DQN)
         self.policy_net = MLP(self.state_length, self.action_size, self.hidden_size).to(self.device)
         self.target_net = MLP(self.state_length, self.action_size, self.hidden_size).to(self.device)
@@ -410,26 +404,28 @@ class BasicAgent(DQN):
 
     def updateState(self, state):
 
-        self.state=torch.tensor(state).to(self.device)
+        self.state = torch.tensor(state).to(self.device)
 
-    def get_activation(self,name):
+    def get_activation(self, name):
         def hook(model, input, output):
             self.activation[name] = output.detach()
+
         return hook
 
 
 def plot_individual_trial(trial):
     plt.plot(trial)
-    plt.ylabel('Steps in Episode')
-    plt.xlabel('Episode')
-    plt.title('Double DQN CartPole v-0 Steps in Select Trial')
+    plt.ylabel("Steps in Episode")
+    plt.xlabel("Episode")
+    plt.title("Double DQN CartPole v-0 Steps in Select Trial")
     plt.show()
 
 
 def train_toy_agent(config):
 
     import gym
-    #torch.autograd.set_detect_anomaly(True)
+
+    # torch.autograd.set_detect_anomaly(True)
     replay_batch_size = config.al.dqn_batch_size
     avg_grad_value = None
     min_memory_for_replay = config.al.min_memory
@@ -451,38 +447,49 @@ def train_toy_agent(config):
         agent.updateState(state)
         agent.policy_error = []
 
-        #print(f'Start---X-coord:{state[0]}, Velocity:{state[1]}')
-        #for t in range(MAX_STEPS_PER_EPISODE):
+        # print(f'Start---X-coord:{state[0]}, Velocity:{state[1]}')
+        # for t in range(MAX_STEPS_PER_EPISODE):
         while not done:
-            #env.render()
+            # env.render()
             action = agent.getAction()
             next_state, reward, done, _ = env.step(action)
             episode_score += reward
             agent.updateState(next_state)
-            #print(f'[{t}]---X-coord:{next_state[0]}, Velocity:{next_state[1]}, Done:{done}')
+            # print(f'[{t}]---X-coord:{next_state[0]}, Velocity:{next_state[1]}, Done:{done}')
             agent.push_to_buffer(state, action, next_state, reward, done)
 
         # Train Network every
         if len(agent.memory) > min_memory_for_replay and (i_episode % update_step == 0):
-            agent.train(BATCH_SIZE=replay_batch_size,  dqn_epochs=dqn_epochs, iteration=i_episode)
+            agent.train(BATCH_SIZE=replay_batch_size, dqn_epochs=dqn_epochs, iteration=i_episode)
             agent.update_target_network()
-            avg_grad_value = torch.mean(torch.stack([torch.mean(abs(param.grad)) for param in agent.policy_net.parameters()]))
+            avg_grad_value = torch.mean(
+                torch.stack(
+                    [torch.mean(abs(param.grad)) for param in agent.policy_net.parameters()]
+                )
+            )
 
-        avg_param_value = torch.mean(torch.stack([torch.mean(abs(param)) for param in agent.policy_net.parameters()]))
+        avg_param_value = torch.mean(
+            torch.stack([torch.mean(abs(param)) for param in agent.policy_net.parameters()])
+        )
 
         agent.update_epsilon()
         trial_episode_scores += [episode_score]
         last_100_avg = np.mean(trial_episode_scores[-100:])
         if avg_grad_value:
-            print(f'E {i_episode} scored {episode_score}, avg {last_100_avg:.2f}, avg param {avg_param_value:.2f}', end = ', ')
-            print(f'avg_grad {avg_grad_value:.2f} avg_loss {np.mean(agent.policy_error):.2f}')
+            print(
+                f"E {i_episode} scored {episode_score}, avg {last_100_avg:.2f}, avg param {avg_param_value:.2f}",
+                end=", ",
+            )
+            print(f"avg_grad {avg_grad_value:.2f} avg_loss {np.mean(agent.policy_error):.2f}")
         else:
-            print(f'E {i_episode} scored {episode_score}, avg {last_100_avg:.2f}, avg param {avg_param_value:.2f}')
+            print(
+                f"E {i_episode} scored {episode_score}, avg {last_100_avg:.2f}, avg param {avg_param_value:.2f}"
+            )
 
         if len(trial_episode_scores) >= 100 and last_100_avg >= 195.0:
-            print (f'Trial 1 solved in {i_episode-100} episodes!')
+            print(f"Trial 1 solved in {i_episode-100} episodes!")
             break
 
     env.close()
-    #plot_individual_trial(trial_episode_scores)
-    #plot_individual_trial(agent.policy_error)
+    # plot_individual_trial(trial_episode_scores)
+    # plot_individual_trial(agent.policy_error)

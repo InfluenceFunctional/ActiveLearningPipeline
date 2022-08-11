@@ -1,16 +1,17 @@
-'''Import statements'''
+"""Import statements"""
 import torch
 import torch.nn.functional as F
 from torch.utils import data
-from torch import nn, optim, cuda, backends
+from torch import nn, optim
 import math
 from sklearn.utils import shuffle
 
 import os
 import sys
-from utils import *
+import numpy as np
+from utils import getModelName, printRecord, bcolors
 
-'''
+"""
 This script contains models for fitting DNA sequence data
 
 > Inputs: list of DNA sequences in letter format
@@ -23,65 +24,81 @@ To-do's
 
 Problems
 ==> we need to think about whether or not to shuffle test set between runs, or indeed what to use in the test set at all - right now we shuffle
-'''
+"""
 
 
-class modelNet():
+class modelNet:
     def __init__(self, config, ensembleIndex):
         self.config = config
         self.ensembleIndex = ensembleIndex
-        self.config.history = min(self.config.proxy.history, self.config.proxy.max_epochs) # length of past to check
+        self.config.history = min(
+            self.config.proxy.history, self.config.proxy.max_epochs
+        )  # length of past to check
         torch.random.manual_seed(int(config.seeds.model + ensembleIndex))
         self.initModel()
 
     def initModel(self):
-        '''
+        """
         Initialize model and optimizer
         :return:
-        '''
-        if self.config.proxy.model_type == 'transformer': # switch to variable-length sequence model
+        """
+        if (
+            self.config.proxy.model_type == "transformer"
+        ):  # switch to variable-length sequence model
             self.model = transformer(self.config)
-        elif self.config.proxy.model_type == 'mlp':
+        elif self.config.proxy.model_type == "mlp":
             self.model = MLP(self.config)
-        elif self.config.proxy.model_type == 'transformer2': # upgraded self-attention model
+        elif self.config.proxy.model_type == "transformer2":  # upgraded self-attention model
             self.model = transformer2(self.config)
         else:
-            print(self.config.proxy.model_type + ' is not one of the available models')
+            print(self.config.proxy.model_type + " is not one of the available models")
 
-        if self.config.device == 'cuda':
+        if self.config.device == "cuda":
             self.model = self.model.cuda()
         self.optimizer = optim.AdamW(self.model.parameters(), amsgrad=True)
         datasetBuilder = buildDataset(self.config)
         self.mean, self.std = datasetBuilder.getStandardization()
         self.dataset_samples, self.dataset_scores = datasetBuilder.getFullDataset()
 
-
     def save(self, best):
         if best == 0:
-            torch.save({'model_state_dict': self.model.state_dict(), 'optimizer_state_dict': self.optimizer.state_dict()}, 'ckpts/'+getModelName(self.ensembleIndex)+'_final')
+            torch.save(
+                {
+                    "model_state_dict": self.model.state_dict(),
+                    "optimizer_state_dict": self.optimizer.state_dict(),
+                },
+                f"{self.config.workdir}/ckpts/{getModelName(self.ensembleIndex)}_final",
+            )
         elif best == 1:
-            torch.save({'model_state_dict': self.model.state_dict(), 'optimizer_state_dict': self.optimizer.state_dict()}, 'ckpts/'+getModelName(self.ensembleIndex))
+            torch.save(
+                {
+                    "model_state_dict": self.model.state_dict(),
+                    "optimizer_state_dict": self.optimizer.state_dict(),
+                },
+                f"{self.config.workdir}/ckpts/{getModelName(self.ensembleIndex)}",
+            )
 
-
-    def load(self,ensembleIndex):
-        '''
+    def load(self, ensembleIndex):
+        """
         Check if a checkpoint exists for this model - if so, load it
         :return:
-        '''
+        """
         dirName = getModelName(ensembleIndex)
-        if os.path.exists('ckpts/' + dirName):  # reload model
-            checkpoint = torch.load('ckpts/' + dirName)
+        if os.path.exists(f"{self.config.workdir}/ckpts/{dirName}"):  # reload model
+            checkpoint = torch.load(f"{self.config.workdir}/ckpts/{dirName}")
 
-            if list(checkpoint['model_state_dict'])[0][0:6] == 'module':  # when we use dataparallel it breaks the state_dict - fix it by removing word 'module' from in front of everything
-                for i in list(checkpoint['model_state_dict']):
-                    checkpoint['model_state_dict'][i[7:]] = checkpoint['model_state_dict'].pop(i)
+            if (
+                list(checkpoint["model_state_dict"])[0][0:6] == "module"
+            ):  # when we use dataparallel it breaks the state_dict - fix it by removing word 'module' from in front of everything
+                for i in list(checkpoint["model_state_dict"]):
+                    checkpoint["model_state_dict"][i[7:]] = checkpoint["model_state_dict"].pop(i)
 
-            self.model.load_state_dict(checkpoint['model_state_dict'])
+            self.model.load_state_dict(checkpoint["model_state_dict"])
 
-            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-            #prev_epoch = checkpoint['epoch']
+            self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            # prev_epoch = checkpoint['epoch']
 
-            if self.config.device == 'cuda':
+            if self.config.device == "cuda":
                 self.model.cuda()  # move net to GPU
                 for state in self.optimizer.state.values():  # move optimizer to GPU
                     for k, v in state.items():
@@ -89,57 +106,60 @@ class modelNet():
                             state[k] = v.cuda()
 
             self.model.eval()
-            #printRecord('Reloaded model: ', dirName)
+            # printRecord('Reloaded model: ', dirName)
         else:
             pass
-            #printRecord('New model: ', dirName)
+            # printRecord('New model: ', dirName)
 
-
-    def converge(self, returnHist = False):
-        '''
+    def converge(self, returnHist=False):
+        """
         train model until test loss converges
         :return:
-        '''
-        [self.err_tr_hist, self.err_te_hist] = [[], []] # initialize error records
+        """
+        [self.err_tr_hist, self.err_te_hist] = [[], []]  # initialize error records
 
         tr, te, self.datasetSize = getDataloaders(self.config, self.ensembleIndex)
 
-        #printRecord(f"Dataset size is: {bcolors.OKCYAN}%d{bcolors.ENDC}" %self.datasetSize)
+        # printRecord(f"Dataset size is: {bcolors.OKCYAN}%d{bcolors.ENDC}" %self.datasetSize)
 
-        self.converged = 0 # convergence flag
+        self.converged = 0  # convergence flag
         self.epochs = 0
 
-        while (self.converged != 1):
-            if self.epochs > 0: #  this allows us to keep the previous model if it is better than any produced on this run
+        while self.converged != 1:
+            if (
+                self.epochs > 0
+            ):  # this allows us to keep the previous model if it is better than any produced on this run
                 self.train_net(tr)
             else:
                 self.err_tr_hist.append(0)
 
-            self.test(te) # baseline from any prior training
-            if self.err_te_hist[-1] == np.min(self.err_te_hist): # if this is the best test loss we've seen
+            self.test(te)  # baseline from any prior training
+            if self.err_te_hist[-1] == np.min(
+                self.err_te_hist
+            ):  # if this is the best test loss we've seen
                 self.save(best=1)
             # after training at least 10 epochs, check convergence
             if self.epochs >= self.config.history:
                 self.checkConvergence()
 
             if (self.epochs % 10 == 0) and self.config.debug:
-                printRecord("Model {} epoch {} test loss {:.3f}".format(self.ensembleIndex, self.epochs, self.err_te_hist[-1]))
+                printRecord(
+                    "Model {} epoch {} test loss {:.3f}".format(
+                        self.ensembleIndex, self.epochs, self.err_te_hist[-1]
+                    )
+                )
 
             self.epochs += 1
-
-
-
 
         if returnHist:
             return self.err_te_hist
 
-
     def train_net(self, tr):
-        '''
+        """
         perform one epoch of training
         :param tr: training set dataloader
         :return: n/a
-        '''
+        """
         err_tr = []
         self.model.train(True)
         for i, trainData in enumerate(tr):
@@ -152,13 +172,12 @@ class modelNet():
 
         self.err_tr_hist.append(torch.mean(torch.stack(err_tr)).cpu().detach().numpy())
 
-
     def test(self, te):
-        '''
+        """
         get the loss over the test dataset
         :param te: test set dataloader
         :return: n/a
-        '''
+        """
         err_te = []
         self.model.train(False)
         with torch.no_grad():  # we won't need gradients! no training just testing
@@ -168,7 +187,6 @@ class modelNet():
 
         self.err_te_hist.append(torch.mean(torch.stack(err_te)).cpu().detach().numpy())
 
-
     def getLoss(self, train_data):
         """
         get the regression loss on a batch of datapoints
@@ -177,25 +195,22 @@ class modelNet():
         """
         inputs = train_data[0]
         targets = train_data[1]
-        if self.config.device == 'cuda':
+        if self.config.device == "cuda":
             inputs = inputs.cuda()
             targets = targets.cuda()
 
         output = self.model(inputs.float())
-        targets = (targets - self.mean)/self.std # standardize the targets during training
-        #return F.smooth_l1_loss(output[:,0], targets.float())
-        return F.mse_loss(output[:,0], targets.float())
-
-
+        targets = (targets - self.mean) / self.std  # standardize the targets during training
+        # return F.smooth_l1_loss(output[:,0], targets.float())
+        return F.mse_loss(output[:, 0], targets.float())
 
     def getMinF(self):
         inputs = self.dataset_samples
-        if self.config.device == 'cuda':
+        if self.config.device == "cuda":
             inputs = torch.Tensor(inputs).cuda()
 
         outputs = l2r(self.model(inputs))
         self.best_f = np.percentile(outputs, self.config.al.EI_max_percentile)
-
 
     def checkConvergence(self):
         """
@@ -204,36 +219,62 @@ class modelNet():
         :return: convergence flag
         """
         # check if test loss is increasing for at least several consecutive epochs
-        eps = 1e-4 # relative measure for constancy
+        eps = 1e-4  # relative measure for constancy
 
-        if all(np.asarray(self.err_te_hist[-self.config.history+1:])  > self.err_te_hist[-self.config.history]): #
+        if all(
+            np.asarray(self.err_te_hist[-self.config.history + 1 :])
+            > self.err_te_hist[-self.config.history]
+        ):  #
             self.converged = 1
-            printRecord(bcolors.WARNING + "Model converged after {} epochs - test loss increasing at {:.4f}".format(self.epochs + 1, min(self.err_te_hist)) + bcolors.ENDC)
+            printRecord(
+                bcolors.WARNING
+                + "Model converged after {} epochs - test loss increasing at {:.4f}".format(
+                    self.epochs + 1, min(self.err_te_hist)
+                )
+                + bcolors.ENDC
+            )
 
         # check if test loss is unchanging
-        if abs(self.err_te_hist[-self.config.history] - np.average(self.err_te_hist[-self.config.history:]))/self.err_te_hist[-self.config.history] < eps:
+        if (
+            abs(
+                self.err_te_hist[-self.config.history]
+                - np.average(self.err_te_hist[-self.config.history :])
+            )
+            / self.err_te_hist[-self.config.history]
+            < eps
+        ):
             self.converged = 1
-            printRecord(bcolors.WARNING + "Model converged after {} epochs - hit test loss convergence criterion at {:.4f}".format(self.epochs + 1, min(self.err_te_hist)) + bcolors.ENDC)
+            printRecord(
+                bcolors.WARNING
+                + "Model converged after {} epochs - hit test loss convergence criterion at {:.4f}".format(
+                    self.epochs + 1, min(self.err_te_hist)
+                )
+                + bcolors.ENDC
+            )
 
         if self.epochs >= self.config.proxy.max_epochs:
             self.converged = 1
-            printRecord(bcolors.WARNING + "Model converged after {} epochs- epoch limit was hit with test loss {:.4f}".format(self.epochs + 1, min(self.err_te_hist)) + bcolors.ENDC)
+            printRecord(
+                bcolors.WARNING
+                + "Model converged after {} epochs- epoch limit was hit with test loss {:.4f}".format(
+                    self.epochs + 1, min(self.err_te_hist)
+                )
+                + bcolors.ENDC
+            )
 
-
-        #if self.converged == 1:
-        #    printRecord(f'{bcolors.OKCYAN}Model training converged{bcolors.ENDC} after {bcolors.OKBLUE}%d{bcolors.ENDC}' %self.epochs + f" epochs and with a final test loss of {bcolors.OKGREEN}%.3f{bcolors.ENDC}" % np.amin(np.asarray(self.err_te_hist)))
-
+        # if self.converged == 1:
+        # printRecord(f'{bcolors.OKCYAN}Model training converged{bcolors.ENDC} after {bcolors.OKBLUE}%d{bcolors.ENDC}' %self.epochs + f" epochs and with a final test loss of {bcolors.OKGREEN}%.3f{bcolors.ENDC}" % np.amin(np.asarray(self.err_te_hist)))
 
     def evaluate(self, Data, output="Average"):
-        '''
+        """
         evaluate the model
         output types - if "Average" return the average of ensemble predictions
             - if 'Variance' return the variance of ensemble predictions
         # future upgrade - isolate epistemic uncertainty from intrinsic randomness
         :param Data: input data
         :return: model scores
-        '''
-        if self.config.device == 'cuda':
+        """
+        if self.config.device == "cuda":
             Data = torch.Tensor(Data).cuda().float()
         else:
             Data = torch.Tensor(Data).float()
@@ -242,40 +283,53 @@ class modelNet():
             self.model.train(False)
             with torch.no_grad():  # we won't need gradients! no training just testing
                 outputs = self.model(Data).cpu().detach().numpy()
-                mean = torch.mean(outputs,dim=1)
-                std = torch.std(outputs,dim=1)
+                mean = torch.mean(outputs, dim=1)
+                std = torch.std(outputs, dim=1)
         elif self.config.proxy.uncertainty_estimation == "dropout":
-            self.model.train(True) # need this to be true to activate dropout
+            self.model.train(True)  # need this to be true to activate dropout
             with torch.no_grad():
-                outputs = torch.hstack([self.model(Data) for _ in range(self.config.proxy.dropout_samples)]).cpu().detach().numpy()
+                outputs = (
+                    torch.hstack(
+                        [self.model(Data) for _ in range(self.config.proxy.dropout_samples)]
+                    )
+                    .cpu()
+                    .detach()
+                    .numpy()
+                )
             mean = np.mean(outputs, axis=1)
             std = np.std(outputs, axis=1)
         else:
-            print("No uncertainty estimator called {}".format(self.config.proxy.uncertainty_estimation))
+            print(
+                "No uncertainty estimator called {}".format(
+                    self.config.proxy.uncertainty_estimation
+                )
+            )
             sys.exit()
 
-        if output == 'Average':
+        if output == "Average":
             return mean * self.std + self.mean
-        elif output == 'Uncertainty':
+        elif output == "Uncertainty":
             return std * self.std
-        elif output == 'Both':
+        elif output == "Both":
             return mean * self.std + self.mean, std * self.std
-        elif output == 'fancy_acquisition':
-            if self.config.al.acquisition_function.lower() == 'ucb':
+        elif output == "fancy_acquisition":
+            if self.config.al.acquisition_function.lower() == "ucb":
                 mean = mean * self.std + self.mean
                 std = std * self.std
                 score = mean + self.config.al.UCB_kappa * std
                 score = l2r(torch.Tensor(score))
                 return score, mean * self.std + self.mean, std * self.std
-            elif self.config.al.acquisition_function.lower() == 'ei':
+            elif self.config.al.acquisition_function.lower() == "ei":
                 try:
-                    if self.best_f == 'canoe': # I just want it to load for goodness sake
+                    if self.best_f == "canoe":  # I just want it to load for goodness sake
                         pass
                 except:
                     self.getMinF()
 
                 outputs = l2r(outputs)
-                mean, std = torch.mean(torch.Tensor(outputs),dim=1), torch.std(torch.Tensor(outputs),dim=1)
+                mean, std = torch.mean(torch.Tensor(outputs), dim=1), torch.std(
+                    torch.Tensor(outputs), dim=1
+                )
                 u = torch.tensor((mean - self.best_f) / (std + 1e-4))
                 u = -u  # we are minimizing # MK double-check on this
                 normal = torch.distributions.Normal(torch.zeros_like(u), torch.ones_like(u))
@@ -284,18 +338,16 @@ class modelNet():
                 ei = std * (updf + u * ucdf)
                 return ei.cpu().detach().numpy(), mean * self.std + self.mean, std * self.std
 
-
-
     def raw(self, Data, output="Average"):
-        '''
+        """
         evaluate the model
         output types - if "Average" return the average of ensemble predictions
             - if 'Variance' return the variance of ensemble predictions
         # future upgrade - isolate epistemic uncertainty from intrinsic randomness
         :param Data: input data
         :return: model scores
-        '''
-        if self.config.device == 'cuda':
+        """
+        if self.config.device == "cuda":
             Data = torch.Tensor(Data).cuda().float()
         else:
             Data = torch.Tensor(Data).float()
@@ -303,50 +355,55 @@ class modelNet():
         self.model.train(False)
         with torch.no_grad():  # we won't need gradients! no training just testing
             out = self.model(Data).cpu().detach().numpy()
-            if output == 'Average':
-                return np.average(out,axis=1)
-            elif output == 'Variance':
-                return np.var(out,axis=1)
-            elif output == 'Both':
-                return np.average(out,axis=1), np.var(out,axis=1)
+            if output == "Average":
+                return np.average(out, axis=1)
+            elif output == "Variance":
+                return np.var(out, axis=1)
+            elif output == "Both":
+                return np.average(out, axis=1), np.var(out, axis=1)
 
-    def loadEnsemble(self,models):
-        '''
+    def loadEnsemble(self, models):
+        """
         load up a model ensemble
         :return:
-        '''
+        """
         self.model = modelEnsemble(models)
-        if self.config.device == 'cuda':
+        if self.config.device == "cuda":
             self.model = self.model.cuda()
 
 
-class modelEnsemble(nn.Module): # just for evaluation of a pre-trained ensemble
-    def __init__(self,models):
+class modelEnsemble(nn.Module):  # just for evaluation of a pre-trained ensemble
+    def __init__(self, models):
         super(modelEnsemble, self).__init__()
         self.models = models
         self.models = nn.ModuleList(self.models)
 
     def forward(self, x):
         output = []
-        for i in range(len(self.models)): # get the prediction from each model
-            #output.append(self.models[i](torch.Tensor(x).clone()))
+        for i in range(len(self.models)):  # get the prediction from each model
+            # output.append(self.models[i](torch.Tensor(x).clone()))
             output.append(self.models[i](x.clone()))
 
-        output = torch.cat(output,dim=1) #
-        return output # return mean and variance of the ensemble predictions
+        output = torch.cat(output, dim=1)  #
+        return output  # return mean and variance of the ensemble predictions
 
 
-class buildDataset():
-    '''
+class buildDataset:
+    """
     build dataset object
-    '''
-    def __init__(self, config):
-        dataset = np.load('datasets/' + config.dataset.oracle + '.npy', allow_pickle=True)
-        dataset = dataset.item()
-        self.samples = dataset['samples']
-        self.targets = dataset['energies']
+    """
 
-        self.samples, self.targets = shuffle(self.samples, self.targets, random_state=config.seeds.dataset)
+    def __init__(self, config):
+        dataset = np.load(
+            f"{config.workdir}/datasets/{config.dataset.oracle}.npy", allow_pickle=True
+        )
+        dataset = dataset.item()
+        self.samples = dataset["samples"]
+        self.targets = dataset["energies"]
+
+        self.samples, self.targets = shuffle(
+            self.samples, self.targets, random_state=config.seeds.dataset
+        )
 
     def reshuffle(self, seed=None):
         self.samples, self.targets = shuffle(self.samples, self.targets, random_state=seed)
@@ -367,12 +424,12 @@ class buildDataset():
         return np.mean(self.targets), np.sqrt(np.var(self.targets))
 
 
-def getDataloaders(config, ensembleIndex): # get the dataloaders, to load the dataset in batches
-    '''
+def getDataloaders(config, ensembleIndex):  # get the dataloaders, to load the dataset in batches
+    """
     creat dataloader objects from the dataset
     :param config:
     :return:
-    '''
+    """
     training_batch = config.proxy.mbsize
     dataset = buildDataset(config)  # get data
     if config.proxy.shuffle_dataset:
@@ -385,27 +442,32 @@ def getDataloaders(config, ensembleIndex): # get the dataloaders, to load the da
     train_dataset = []
     test_dataset = []
 
-    for i in range(test_size, test_size + train_size): # take the training data from the end - we will get the newly appended datapoints this way without ever seeing the test set
+    for i in range(
+        test_size, test_size + train_size
+    ):  # take the training data from the end - we will get the newly appended datapoints this way without ever seeing the test set
         train_dataset.append(dataset[i])
-    for i in range(test_size): # test data is drawn from oldest datapoints
+    for i in range(test_size):  # test data is drawn from oldest datapoints
         test_dataset.append(dataset[i])
 
-    tr = data.DataLoader(train_dataset, batch_size=training_batch, shuffle=True, num_workers= 0, pin_memory=False)  # build dataloaders
-    te = data.DataLoader(test_dataset, batch_size=training_batch, shuffle=False, num_workers= 0, pin_memory=False) # num_workers must be zero or multiprocessing will not work (can't spawn multiprocessing within multiprocessing)
+    tr = data.DataLoader(
+        train_dataset, batch_size=training_batch, shuffle=True, num_workers=0, pin_memory=False
+    )  # build dataloaders
+    te = data.DataLoader(
+        test_dataset, batch_size=training_batch, shuffle=False, num_workers=0, pin_memory=False
+    )  # num_workers must be zero or multiprocessing will not work (can't spawn multiprocessing within multiprocessing)
 
     return tr, te, dataset.__len__()
 
 
 def getDataSize(config):
-    dataset = np.load('datasets/' + config.dataset.oracle + '.npy', allow_pickle=True)
+    dataset = np.load(f"{config.workdir}/datasets/{config.dataset.oracle}.npy", allow_pickle=True)
     dataset = dataset.item()
-    samples = dataset['samples']
+    samples = dataset["samples"]
 
     return len(samples[0])
 
 
 class PositionalEncoding(nn.Module):
-
     def __init__(self, d_model: int, dropout: float = 0.1, max_len: int = 5000):
         super().__init__()
         self.dropout = nn.Dropout(p=dropout)
@@ -415,20 +477,20 @@ class PositionalEncoding(nn.Module):
         pe = torch.zeros(max_len, 1, d_model)
         pe[:, 0, 0::2] = torch.sin(position * div_term)
         pe[:, 0, 1::2] = torch.cos(position * div_term)
-        self.register_buffer('pe', pe)
+        self.register_buffer("pe", pe)
 
     def forward(self, x):
         """
         Args:
             x: Tensor, shape [seq_len, batch_size, embedding_dim]
         """
-        x = x + self.pe[:x.size(0)]
+        x = x + self.pe[: x.size(0)]
         return self.dropout(x)
 
 
 class transformer(nn.Module):
-    def __init__(self,config):
-        super(transformer,self).__init__()
+    def __init__(self, config):
+        super(transformer, self).__init__()
 
         self.embedDim = config.proxy.width
         self.hiddenDim = config.proxy.width
@@ -436,21 +498,29 @@ class transformer(nn.Module):
         self.maxLen = config.dataset.max_length
         self.dictLen = config.dataset.dict_size
         self.classes = int(config.dataset.dict_size + 1)
-        self.heads = min([4, max([1,self.embedDim//self.dictLen])])
+        self.heads = min([4, max([1, self.embedDim // self.dictLen])])
 
-        self.positionalEncoder = PositionalEncoding(self.embedDim, max_len = self.maxLen, dropout=0)
-        self.embedding = nn.Embedding(self.dictLen + 1, embedding_dim = self.embedDim)
+        self.positionalEncoder = PositionalEncoding(self.embedDim, max_len=self.maxLen, dropout=0)
+        self.embedding = nn.Embedding(self.dictLen + 1, embedding_dim=self.embedDim)
 
-        factory_kwargs = {'device': None, 'dtype': None}
-        #encoder_layer = nn.TransformerEncoderLayer(self.embedDim, nhead = self.heads,dim_feedforward=self.hiddenDim, activation='gelu', dropout=0)
-        #self.encoder = nn.TransformerEncoder(encoder_layer, num_layers = self.layers)
+        factory_kwargs = {"device": None, "dtype": None}
+        # encoder_layer = nn.TransformerEncoderLayer(self.embedDim, nhead = self.heads,dim_feedforward=self.hiddenDim, activation='gelu', dropout=0)
+        # self.encoder = nn.TransformerEncoder(encoder_layer, num_layers = self.layers)
         self.decoder_layers = []
         self.encoder_linear = []
         self.self_attn_layers = []
         self.decoder_dropouts = []
         for i in range(self.layers):
-            self.encoder_linear.append(nn.Linear(self.embedDim,self.embedDim))
-            self.self_attn_layers.append(nn.MultiheadAttention(self.embedDim, self.heads, dropout=config.proxy.dropout, batch_first=False, **factory_kwargs))
+            self.encoder_linear.append(nn.Linear(self.embedDim, self.embedDim))
+            self.self_attn_layers.append(
+                nn.MultiheadAttention(
+                    self.embedDim,
+                    self.heads,
+                    dropout=config.proxy.dropout,
+                    batch_first=False,
+                    **factory_kwargs,
+                )
+            )
 
             if i == 0:
                 in_dim = self.embedDim
@@ -464,19 +534,21 @@ class transformer(nn.Module):
         self.decoder_dropouts = nn.ModuleList(self.decoder_dropouts)
         self.encoder_linear = nn.ModuleList(self.encoder_linear)
         self.self_attn_layers = nn.ModuleList(self.self_attn_layers)
-        self.output_layer = nn.Linear(self.hiddenDim,self.classes,bias=False)
+        self.output_layer = nn.Linear(self.hiddenDim, self.classes, bias=False)
 
-    def forward(self,x):
-        x_key_padding_mask = (x==0).clone().detach() # zero out the attention of empty sequence elements
-        x = self.embedding(x.transpose(1,0).int()) # [seq, batch]
+    def forward(self, x):
+        x_key_padding_mask = (
+            (x == 0).clone().detach()
+        )  # zero out the attention of empty sequence elements
+        x = self.embedding(x.transpose(1, 0).int())  # [seq, batch]
         x = self.positionalEncoder(x)
-        #x = self.encoder(x,src_key_padding_mask=x_key_padding_mask)
-        #x = x.permute(1,0,2).reshape(x_key_padding_mask.shape[0], int(self.embedDim*self.maxLen))
+        # x = self.encoder(x,src_key_padding_mask=x_key_padding_mask)
+        # x = x.permute(1,0,2).reshape(x_key_padding_mask.shape[0], int(self.embedDim*self.maxLen))
         for i in range(len(self.self_attn_layers)):
-            x = self.self_attn_layers[i](x,x,x,key_padding_mask=x_key_padding_mask)[0]
+            x = self.self_attn_layers[i](x, x, x, key_padding_mask=x_key_padding_mask)[0]
             x = self.encoder_linear[i](x)
 
-        x = x.mean(dim=0) # mean aggregation
+        x = x.mean(dim=0)  # mean aggregation
         for i in range(len(self.decoder_layers)):
             x = F.gelu(self.decoder_layers[i](x))
             x = self.decoder_dropouts[i](x)
@@ -487,8 +559,8 @@ class transformer(nn.Module):
 
 
 class transformer2(nn.Module):
-    def __init__(self,config):
-        super(transformer2,self).__init__()
+    def __init__(self, config):
+        super(transformer2, self).__init__()
 
         self.embedDim = config.proxy.width
         self.filters = config.proxy.width
@@ -496,20 +568,22 @@ class transformer2(nn.Module):
         self.decoder_layers = 1
         self.maxLen = config.dataset.max_length
         self.dictLen = config.dataset.dict_size
-        self.proxy_aggregation = 'sum'
-        self.proxy_attention_norm = 'layer'
-        self.proxy_norm = 'layer'
+        self.proxy_aggregation = "sum"
+        self.proxy_attention_norm = "layer"
+        self.proxy_norm = "layer"
         self.classes = int(config.dataset.dict_size + 1)
-        self.heads = max([4, max([1,self.embedDim//self.dictLen])])
+        self.heads = max([4, max([1, self.embedDim // self.dictLen])])
         self.relative_attention = True
-        act_func = 'gelu'
+        act_func = "gelu"
 
-        self.positionalEncoder = PositionalEncoding(self.embedDim, max_len = self.maxLen, dropout=config.proxy.dropout)
-        self.embedding = nn.Embedding(self.dictLen + 1, embedding_dim = self.embedDim)
+        self.positionalEncoder = PositionalEncoding(
+            self.embedDim, max_len=self.maxLen, dropout=config.proxy.dropout
+        )
+        self.embedding = nn.Embedding(self.dictLen + 1, embedding_dim=self.embedDim)
 
-        factory_kwargs = {'device': None, 'dtype': None}
-        #encoder_layer = nn.TransformerEncoderLayer(self.embedDim, nhead = self.heads,dim_feedforward=self.filters, activation='gelu', dropout=0)
-        #self.encoder = nn.TransformerEncoder(encoder_layer, num_layers = self.layers)
+        factory_kwargs = {"device": None, "dtype": None}
+        # encoder_layer = nn.TransformerEncoderLayer(self.embedDim, nhead = self.heads,dim_feedforward=self.filters, activation='gelu', dropout=0)
+        # self.encoder = nn.TransformerEncoder(encoder_layer, num_layers = self.layers)
         self.decoder_linear = []
         self.encoder_norms1 = []
         self.encoder_norms2 = []
@@ -524,13 +598,25 @@ class transformer2(nn.Module):
         self.decoder_activations = []
 
         for i in range(self.encoder_layers):
-            self.encoder_linear1.append(nn.Linear(self.embedDim,self.embedDim))
-            self.encoder_linear2.append(nn.Linear(self.embedDim,self.embedDim))
+            self.encoder_linear1.append(nn.Linear(self.embedDim, self.embedDim))
+            self.encoder_linear2.append(nn.Linear(self.embedDim, self.embedDim))
 
             if not self.relative_attention:
-                self.self_attn_layers.append(nn.MultiheadAttention(self.embedDim, self.heads, dropout=config.proxy.dropout, batch_first=False, **factory_kwargs))
+                self.self_attn_layers.append(
+                    nn.MultiheadAttention(
+                        self.embedDim,
+                        self.heads,
+                        dropout=config.proxy.dropout,
+                        batch_first=False,
+                        **factory_kwargs,
+                    )
+                )
             else:
-                self.self_attn_layers.append(RelativeGlobalAttention(self.embedDim, self.heads, dropout=config.proxy.dropout, max_len=self.maxLen))
+                self.self_attn_layers.append(
+                    RelativeGlobalAttention(
+                        self.embedDim, self.heads, dropout=config.proxy.dropout, max_len=self.maxLen
+                    )
+                )
 
             self.encoder_activations.append(Activation(act_func, self.filters))
 
@@ -539,7 +625,7 @@ class transformer2(nn.Module):
             else:
                 self.encoder_dropouts.append(nn.Identity())
 
-            if self.proxy_attention_norm == 'layer': # work in progress
+            if self.proxy_attention_norm == "layer":  # work in progress
                 self.encoder_norms1.append(nn.LayerNorm(self.embedDim))
                 self.encoder_norms2.append(nn.LayerNorm(self.embedDim))
 
@@ -547,22 +633,21 @@ class transformer2(nn.Module):
                 self.encoder_norms1.append(nn.Identity())
                 self.encoder_norms2.append(nn.Identity())
 
-
         for i in range(self.decoder_layers):
             if i == 0:
                 self.decoder_linear.append(nn.Linear(self.embedDim, self.filters))
             else:
                 self.decoder_linear.append(nn.Linear(self.filters, self.filters))
 
-            self.decoder_activations.append(Activation(act_func,self.filters))
+            self.decoder_activations.append(Activation(act_func, self.filters))
             if config.proxy.dropout != 0:
                 self.decoder_dropouts.append(nn.Dropout(config.proxy.dropout))
             else:
                 self.decoder_dropouts.append(nn.Identity())
 
-            if self.proxy_norm == 'batch':
+            if self.proxy_norm == "batch":
                 self.decoder_norms.append(nn.BatchNorm1d(self.filters))
-            elif self.proxy_norm == 'layer':
+            elif self.proxy_norm == "layer":
                 self.decoder_norms.append(nn.LayerNorm(self.filters))
             else:
                 self.decoder_norms.append(nn.Identity())
@@ -580,20 +665,24 @@ class transformer2(nn.Module):
         self.encoder_activations = nn.ModuleList(self.encoder_activations)
         self.decoder_activations = nn.ModuleList(self.decoder_activations)
 
-        self.output_layer = nn.Linear(self.filters,1,bias=False)
+        self.output_layer = nn.Linear(self.filters, 1, bias=False)
 
-    def forward(self,x, clip = None):
-        x_key_padding_mask = (x==0).clone().detach() # zero out the attention of empty sequence elements
-        x = self.embedding(x.transpose(1,0).int()) # [seq, batch]
+    def forward(self, x, clip=None):
+        x_key_padding_mask = (
+            (x == 0).clone().detach()
+        )  # zero out the attention of empty sequence elements
+        x = self.embedding(x.transpose(1, 0).int())  # [seq, batch]
 
         for i in range(self.encoder_layers):
             # Self-attention block
             residue = x.clone()
             x = self.encoder_norms1[i](x)
             if not self.relative_attention:
-                x = self.self_attn_layers[i](x,x,x,key_padding_mask=x_key_padding_mask)[0]
+                x = self.self_attn_layers[i](x, x, x, key_padding_mask=x_key_padding_mask)[0]
             else:
-                x = self.self_attn_layers[i](x.transpose(1,0)).transpose(1,0) # pairwise relative position encoding embedded in the self-attention block
+                x = self.self_attn_layers[i](x.transpose(1, 0)).transpose(
+                    1, 0
+                )  # pairwise relative position encoding embedded in the self-attention block
             x = self.encoder_dropouts[i](x)
             x = x + residue
 
@@ -605,14 +694,14 @@ class transformer2(nn.Module):
             x = self.encoder_linear2[i](x)
             x = x + residue
 
-        if self.aggregation_mode == 'mean':
-            x = x.mean(dim=0) # mean aggregation
-        elif self.aggregation_mode == 'sum':
-            x = x.sum(dim=0) # sum aggregation
-        elif self.aggregation_mode == 'max':
-            x = x.max(dim=0) # max aggregation
+        if self.aggregation_mode == "mean":
+            x = x.mean(dim=0)  # mean aggregation
+        elif self.aggregation_mode == "sum":
+            x = x.sum(dim=0)  # sum aggregation
+        elif self.aggregation_mode == "max":
+            x = x.max(dim=0)  # max aggregation
         else:
-            print(self.aggregation_mode + ' is not a valid aggregation mode!')
+            print(self.aggregation_mode + " is not a valid aggregation mode!")
 
         for i in range(self.decoder_layers):
             if i != 0:
@@ -627,7 +716,7 @@ class transformer2(nn.Module):
         x = self.output_layer(x)
 
         if clip is not None:
-            x = torch.clip(x,max=clip)
+            x = torch.clip(x, max=clip)
 
         return x
 
@@ -637,9 +726,7 @@ class RelativeGlobalAttention(nn.Module):
         super().__init__()
         d_head, remainder = divmod(d_model, num_heads)
         if remainder:
-            raise ValueError(
-                "incompatible `d_model` and `num_heads`"
-            )
+            raise ValueError("incompatible `d_model` and `num_heads`")
         self.max_len = max_len
         self.d_model = d_model
         self.num_heads = num_heads
@@ -649,9 +736,7 @@ class RelativeGlobalAttention(nn.Module):
         self.dropout = nn.Dropout(dropout)
         self.Er = nn.Parameter(torch.randn(max_len, d_head))
         self.register_buffer(
-            "mask",
-            torch.tril(torch.ones(max_len, max_len))
-                .unsqueeze(0).unsqueeze(0)
+            "mask", torch.tril(torch.ones(max_len, max_len)).unsqueeze(0).unsqueeze(0)
         )
         # self.mask.shape = (1, 1, max_len, max_len)
 
@@ -660,9 +745,7 @@ class RelativeGlobalAttention(nn.Module):
         batch_size, seq_len, _ = x.shape
 
         if seq_len > self.max_len:
-            raise ValueError(
-                "sequence length exceeds model capacity"
-            )
+            raise ValueError("sequence length exceeds model capacity")
 
         k_t = self.key(x).reshape(batch_size, seq_len, self.num_heads, -1).permute(0, 2, 3, 1)
         # k_t.shape = (batch_size, num_heads, d_head, seq_len)
@@ -707,12 +790,12 @@ class RelativeGlobalAttention(nn.Module):
 
 
 class MLP(nn.Module):
-    def __init__(self,config):
-        super(MLP,self).__init__()
+    def __init__(self, config):
+        super(MLP, self).__init__()
         # initialize constants and layers
 
         if True:
-            act_func = 'gelu'
+            act_func = "gelu"
 
         self.inputLength = config.dataset.max_length
         self.tasks = config.dataset.sample_tasks
@@ -722,8 +805,10 @@ class MLP(nn.Module):
         self.init_layer_depth = int(self.inputLength * self.classes)
 
         # build input and output layers
-        self.initial_layer = nn.Linear(int(self.inputLength * self.classes), self.filters) # layer which takes in our sequence in one-hot encoding
-        self.activation1 = Activation(act_func,self.filters,config)
+        self.initial_layer = nn.Linear(
+            int(self.inputLength * self.classes), self.filters
+        )  # layer which takes in our sequence in one-hot encoding
+        self.activation1 = Activation(act_func, self.filters, config)
 
         self.output_layers = []
         for i in range(self.tasks):
@@ -737,71 +822,83 @@ class MLP(nn.Module):
         self.dropouts = []
 
         for i in range(self.layers):
-            self.lin_layers.append(nn.Linear(self.filters,self.filters))
+            self.lin_layers.append(nn.Linear(self.filters, self.filters))
             self.activations.append(Activation(act_func, self.filters))
-            #self.norms.append(nn.BatchNorm1d(self.filters))
+            # self.norms.append(nn.BatchNorm1d(self.filters))
             self.dropouts.append(nn.Dropout(p=config.proxy.dropout))
 
         # initialize module lists
         self.lin_layers = nn.ModuleList(self.lin_layers)
         self.activations = nn.ModuleList(self.activations)
-        #self.norms = nn.ModuleList(self.norms)
+        # self.norms = nn.ModuleList(self.norms)
         self.dropouts = nn.ModuleList(self.dropouts)
 
-
     def forward(self, x):
-        x = F.one_hot(x.long(),num_classes=self.classes)
+        x = F.one_hot(x.long(), num_classes=self.classes)
         x = x.reshape(x.shape[0], self.init_layer_depth).float()
-        x = self.activation1(self.initial_layer(x)) # apply linear transformation and nonlinear activation
+        x = self.activation1(
+            self.initial_layer(x)
+        )  # apply linear transformation and nonlinear activation
         for i in range(self.layers):
             x = self.lin_layers[i](x)
             x = self.activations[i](x)
             x = self.dropouts[i](x)
-            #x = self.norms[i](x)
+            # x = self.norms[i](x)
 
         y = torch.zeros(self.tasks)
         for i in range(self.tasks):
-            y = self.output_layers[i](x) # each task has its own head
+            y = self.output_layers[i](x)  # each task has its own head
 
         return y
 
 
-class kernelActivation(nn.Module): # a better (pytorch-friendly) implementation of activation as a linear combination of basis functions
+class kernelActivation(
+    nn.Module
+):  # a better (pytorch-friendly) implementation of activation as a linear combination of basis functions
     def __init__(self, n_basis, span, channels, *args, **kwargs):
         super(kernelActivation, self).__init__(*args, **kwargs)
 
         self.channels, self.n_basis = channels, n_basis
         # define the space of basis functions
-        self.register_buffer('dict', torch.linspace(-span, span, n_basis)) # positive and negative values for Dirichlet Kernel
-        gamma = 1/(6*(self.dict[-1]-self.dict[-2])**2) # optimum gaussian spacing parameter should be equal to 1/(6*spacing^2) according to KAFnet paper
-        self.register_buffer('gamma',torch.ones(1) * gamma) #
+        self.register_buffer(
+            "dict", torch.linspace(-span, span, n_basis)
+        )  # positive and negative values for Dirichlet Kernel
+        gamma = 1 / (
+            6 * (self.dict[-1] - self.dict[-2]) ** 2
+        )  # optimum gaussian spacing parameter should be equal to 1/(6*spacing^2) according to KAFnet paper
+        self.register_buffer("gamma", torch.ones(1) * gamma)  #
 
-        #self.register_buffer('dict', torch.linspace(0, n_basis-1, n_basis)) # positive values for ReLU kernel
+        # self.register_buffer('dict', torch.linspace(0, n_basis-1, n_basis)) # positive values for ReLU kernel
 
         # define module to learn parameters
         # 1d convolutions allow for grouping of terms, unlike nn.linear which is always fully-connected.
         # #This way should be fast and efficient, and play nice with pytorch optim
-        self.linear = nn.Conv1d(channels * n_basis, channels, kernel_size=(1,1), groups=int(channels), bias=False)
+        self.linear = nn.Conv1d(
+            channels * n_basis, channels, kernel_size=(1, 1), groups=int(channels), bias=False
+        )
 
-        #nn.init.normal(self.linear.weight.data, std=0.1)
-
+        # nn.init.normal(self.linear.weight.data, std=0.1)
 
     def kernel(self, x):
         # x has dimention batch, features, y, x
         # must return object of dimension batch, features, y, x, basis
         x = x.unsqueeze(2)
-        if len(x)==2:
-            x = x.reshape(2,self.channels,1)
+        if len(x) == 2:
+            x = x.reshape(2, self.channels, 1)
 
-        return torch.exp(-self.gamma*(x - self.dict) ** 2)
+        return torch.exp(-self.gamma * (x - self.dict) ** 2)
 
     def forward(self, x):
-        x = self.kernel(x).unsqueeze(-1).unsqueeze(-1) # run activation, output shape batch, features, y, x, basis
-        x = x.reshape(x.shape[0],x.shape[1]*x.shape[2],x.shape[3],x.shape[4]) # concatenate basis functions with filters
-        x = self.linear(x).squeeze(-1).squeeze(-1) # apply linear coefficients and sum
+        x = (
+            self.kernel(x).unsqueeze(-1).unsqueeze(-1)
+        )  # run activation, output shape batch, features, y, x, basis
+        x = x.reshape(
+            x.shape[0], x.shape[1] * x.shape[2], x.shape[3], x.shape[4]
+        )  # concatenate basis functions with filters
+        x = self.linear(x).squeeze(-1).squeeze(-1)  # apply linear coefficients and sum
 
-        #y = torch.zeros((x.shape[0], self.channels, x.shape[-2], x.shape[-1])).cuda() #initialize output
-        #for i in range(self.channels):
+        # y = torch.zeros((x.shape[0], self.channels, x.shape[-2], x.shape[-1])).cuda() #initialize output
+        # for i in range(self.channels):
         #    y[:,i,:,:] = self.linear[i](x[:,i,:,:,:]).squeeze(-1) # multiply coefficients channel-wise (probably slow)
 
         return x
@@ -810,11 +907,11 @@ class kernelActivation(nn.Module): # a better (pytorch-friendly) implementation 
 class Activation(nn.Module):
     def __init__(self, activation_func, filters, *args, **kwargs):
         super().__init__()
-        if activation_func == 'relu':
+        if activation_func == "relu":
             self.activation = F.relu
-        elif activation_func == 'gelu':
+        elif activation_func == "gelu":
             self.activation = F.gelu
-        elif activation_func == 'kernel':
+        elif activation_func == "kernel":
             self.activation = kernelActivation(n_basis=20, span=4, channels=filters)
 
     def forward(self, input):

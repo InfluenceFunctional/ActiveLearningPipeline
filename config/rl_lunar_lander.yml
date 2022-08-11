@@ -21,22 +21,24 @@ al:
   action_size: 4
   state_length: 8
   hidden_size: 128
-  target_sync_interval: 50
   episodes: 100000
-  gamma: 0.95 # discount factor
+  gamma: 0.99 # discount factor
   alpha: 0.001 # learning rate
   lr_gamma: 0.99
   lr_step: 100
-  eps_start: 1 
-  eps_end: 0.5
+  eps_start: 1
+  eps_end: 0.2
   eps_decay: 0.999
-  memory_limit: 100000
+  buffer_size: 100000
   min_memory: 500
-  tau: 0.1 # target network soft update hyperparameter
-  update_type: soft
+  tau: 0.1 # target network soft update hyperparameter SET to 1 FOR HARD UPDATE
   dqn_epochs: 10
   dqn_train_frequency: 1
-  seed: 42
+  eval_interval: 100
+  max_grad_norm: 10
+  learning_start: 1
+  log_rl_to_console: 1 # 1 for true, 0 for false
+  seed: 1
   comet:
     project: rl-validation
     tags: LunarLander-v2

@@ -55,12 +55,13 @@ class QuerySelectionReplayMemory(object):
     def __len__(self):
         return len(self.memory)
 
+
 class ReplayMemory(object):
     """
     Class that encapsulates the experience replay buffer, the push and sampling method
     """
 
-    def __init__(self, length, device = "cpu"):
+    def __init__(self, length, device="cpu"):
         self.memory = deque(maxlen=length)
         self.device = device
 
@@ -68,13 +69,15 @@ class ReplayMemory(object):
         return len(self.memory)
 
     def push(self, state, action, next_state, reward, terminal):
-        self.memory.append({
-            "state":torch.tensor(state),
-            "action":action,
-            "next_state":torch.tensor(next_state),
-            "reward":reward,
-            "terminal":terminal
-        })
+        self.memory.append(
+            {
+                "state": torch.tensor(state),
+                "action": action,
+                "next_state": torch.tensor(next_state),
+                "reward": reward,
+                "terminal": terminal,
+            }
+        )
 
         del state
         del action
@@ -88,11 +91,13 @@ class ReplayMemory(object):
         """
         batch = random.sample(self.memory, batch_size)
 
-        return (torch.stack([step["state"] for step in batch]).to(self.device),
+        return (
+            torch.stack([step["state"] for step in batch]).to(self.device),
             torch.tensor([step["action"] for step in batch]).to(self.device),
             torch.stack([step["next_state"] for step in batch]).to(self.device),
             torch.tensor([step["reward"] for step in batch]).float().to(self.device),
-            torch.tensor([step["terminal"] for step in batch]).to(self.device))
+            torch.tensor([step["terminal"] for step in batch]).to(self.device),
+        )
 
     def reset(self):
         self.memory.clear()

@@ -5,7 +5,6 @@ from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
 import os
-import time
 import sklearn.cluster as cluster
 
 
@@ -54,9 +53,7 @@ def get_config(args, override_args, args2config):
     else:
         config = {}
     # Add args to config: add if not provided; override if in command line
-    override_args = [
-        arg.strip("--").split("=")[0] for arg in override_args if "--" in arg
-    ]
+    override_args = [arg.strip("--").split("=")[0] for arg in override_args if "--" in arg]
     override_args_extra = []
     for k1 in override_args:
         if k1 in args2config:
@@ -128,15 +125,13 @@ def numbers2letters(sequences):  # Tranforming letters to numbers:
         sequences = np.asarray(sequences)
 
     if sequences.ndim < 2:
-        sequences = np.expand_dims(sequences,0)
+        sequences = np.expand_dims(sequences, 0)
 
     my_seq = ["" for x in range(len(sequences))]
     row = 0
     for j in range(len(sequences)):
         seq = sequences[j, :]
-        assert (
-            type(seq) != str
-        ), "Function inputs must be a list of equal length strings"
+        assert type(seq) != str, "Function inputs must be a list of equal length strings"
         for i in range(len(sequences[0])):
             na = seq[i]
             if na == 1:
@@ -184,9 +179,9 @@ def resultsAnalysis(outDir):
         outDicts.append(out)
 
     # collect info for plotting
-    numIter = out["params"]["pipeline iterations"]
-    numModels = out["params"]["model ensemble size"]
-    numSampler = out["params"]["num samplers"]
+    # numIter = out["params"]["pipeline iterations"]
+    # numModels = out["params"]["model ensemble size"]
+    # numSampler = out["params"]["num samplers"]
     optima = []
     testLoss = []
     oracleOptima = []
@@ -205,9 +200,7 @@ def resultsAnalysis(outDir):
 
     for i in range(5):  #
         avgDiff.append(
-            np.average(
-                np.abs((oracleOptima[i:-1:5] - optima[i:-1:5]) / oracleOptima[i:-1:5])
-            )
+            np.average(np.abs((oracleOptima[i:-1:5] - optima[i:-1:5]) / oracleOptima[i:-1:5]))
         )
         avgLoss.append(np.average(testLoss[i:-1:5]))
 
@@ -254,9 +247,7 @@ def binaryDistance(samples, dict_size=None, pairwise=False, extractInds=None):
         else:  # compute distance from the training set or random set
             references = samples[nOutputs:]
             for i in range(nOutputs):
-                distances[i] = np.sum(samples[i] != references) / len(
-                    references.flatten()
-                )
+                distances[i] = np.sum(samples[i] != references) / len(references.flatten())
             # print('Compared with external reference.')
     return distances
 
@@ -271,13 +262,9 @@ def oneHotDistance(samples, dict_size, pairwise=False, extractInds=None):
     :return:
     """
     # do one-hot encoding
-    oneHot = np_oneHot(
-        samples, int(dict_size + 1)
-    )  # assumes dict is 1-N with 0 padding
+    oneHot = np_oneHot(samples, int(dict_size + 1))  # assumes dict is 1-N with 0 padding
     oneHot = oneHot.reshape(oneHot.shape[0], int(oneHot.shape[1] * oneHot.shape[2]))
-    target = oneHot[
-        :extractInds
-    ]  # limit the number of samples we are actually interested in
+    target = oneHot[:extractInds]  # limit the number of samples we are actually interested in
     if target.ndim == 1:
         target = np.expand_dims(target, 0)
 
@@ -301,9 +288,7 @@ def np_oneHot(samples, uniques):
 def sortTopXSamples(sortedSamples, nSamples=int(1e6), distCutoff=0.2):
     # collect top distinct samples
 
-    bestSamples = np.expand_dims(
-        sortedSamples[0], 0
-    )  # start with the best identified sequence
+    bestSamples = np.expand_dims(sortedSamples[0], 0)  # start with the best identified sequence
     bestInds = [0]
     i = -1
     while (len(bestInds) < nSamples) and (i < len(sortedSamples) - 1):
@@ -356,15 +341,22 @@ def filterDuplicateSamples(samples, oldDatasetPath=None, returnInds=False):
         for i in range(len(samplesTuple))
         if not (samplesTuple[i] in seen or seen_add(samplesTuple[i]))
     ]
-    filteredSamples = [filtered[i][0] for i in range(len(filtered))][origDatasetLen:] # unique samples
-    filteredInds = [filtered[i][1] for i in range(len(filtered))][origDatasetLen:] # unique sample idxs
+    filteredSamples = [filtered[i][0] for i in range(len(filtered))][
+        origDatasetLen:
+    ]  # unique samples
+    filteredInds = [filtered[i][1] for i in range(len(filtered))][
+        origDatasetLen:
+    ]  # unique sample idxs
 
-    assert len(filteredSamples) > 0, "Sampler returned duplicates only, problem may be completely solved, or sampler is too myopic"
+    assert (
+        len(filteredSamples) > 0
+    ), "Sampler returned duplicates only, problem may be completely solved, or sampler is too myopic"
 
     if returnInds:
         return (
             np.asarray(filteredSamples),
-            np.asarray(filteredInds) - origDatasetLen, # in samples basis (omitting any prior dataset)
+            np.asarray(filteredInds)
+            - origDatasetLen,  # in samples basis (omitting any prior dataset)
         )
     else:
         return np.asarray(filteredSamples)
@@ -387,9 +379,7 @@ def generateRandomSamples(
         samples = []
         while len(samples) < nSamples:
             for i in range(sampleLengthRange[0], sampleLengthRange[1] + 1):
-                samples.extend(
-                    np.random.randint(1, dictSize + 1, size=(int(10 * dictSize * i), i))
-                )
+                samples.extend(np.random.randint(1, dictSize + 1, size=(int(10 * dictSize * i), i)))
 
             samples = numpy_fillna(
                 np.asarray(samples, dtype=object)
@@ -404,9 +394,7 @@ def generateRandomSamples(
         samples = []
         while len(samples) < nSamples:
             samples.extend(
-                np.random.randint(
-                    1, dictSize + 1, size=(2 * nSamples, sampleLengthRange[1])
-                )
+                np.random.randint(1, dictSize + 1, size=(2 * nSamples, sampleLengthRange[1]))
             )
             samples = numpy_fillna(
                 np.asarray(samples, dtype=object)
@@ -425,7 +413,6 @@ def generateRandomSamples(
     ]  # after shuffle, reduce dataset to desired size, with properly weighted samples
 
     return samples
-
 
 
 def get_n_params(model):
@@ -459,7 +446,7 @@ def doAgglomerativeClustering(samples, energies, uncertainties, dict_size, cutof
         distance_threshold=cutoff,
     ).fit(binaryDistance(samples, dict_size, pairwise=True))
     labels = agglomerate.labels_
-    nClusters = agglomerate.n_clusters_
+    # nClusters = agglomerate.n_clusters_
     clusters = []
     totInds = []
     clusterEns = []
@@ -502,7 +489,7 @@ def filterOutputs(outputs, additionalEntries=None):
         "energies": energies[filteredInds],
         "uncertainties": uncertainties[filteredInds],
     }
-    printRecord('Sampler outputs after filtering - best energy = {:.4f}'.format(np.amin(energies)))
+    printRecord("Sampler outputs after filtering - best energy = {:.4f}".format(np.amin(energies)))
 
     return filteredOutputs
 
@@ -569,28 +556,16 @@ class resultsPlotter:
             [results["state dict record"][i]["test std"] for i in range(self.niters)]
         )
         self.allTestLosses = np.asarray(
-            [
-                results["state dict record"][i]["all test losses"]
-                for i in range(self.niters)
-            ]
+            [results["state dict record"][i]["all test losses"] for i in range(self.niters)]
         )
         self.stdEns = np.asarray(
-            [
-                results["state dict record"][i]["best cluster energies"]
-                for i in range(self.niters)
-            ]
+            [results["state dict record"][i]["best cluster energies"] for i in range(self.niters)]
         )  # these come standardized out of the box
         self.stdDevs = np.asarray(
-            [
-                results["state dict record"][i]["best cluster deviations"]
-                for i in range(self.niters)
-            ]
+            [results["state dict record"][i]["best cluster deviations"] for i in range(self.niters)]
         )
         self.stateSamples = np.asarray(
-            [
-                results["state dict record"][i]["best cluster samples"]
-                for i in range(self.niters)
-            ]
+            [results["state dict record"][i]["best cluster samples"] for i in range(self.niters)]
         )
         self.internalDists = np.asarray(
             [
@@ -610,16 +585,12 @@ class resultsPlotter:
                 for i in range(self.niters)
             ]
         )
-        self.bigDataLoss = np.asarray(
-            [results["big dataset loss"][i] for i in range(self.niters)]
-        )
-        self.bottom10Loss = np.asarray(
-            [results["bottom 10% loss"][i] for i in range(self.niters)]
-        )
+        self.bigDataLoss = np.asarray([results["big dataset loss"][i] for i in range(self.niters)])
+        self.bottom10Loss = np.asarray([results["bottom 10% loss"][i] for i in range(self.niters)])
 
         # get dataset mean and std
         target = os.listdir("datasets")[0]
-        dataset = np.load("datasets/" + target, allow_pickle=True).item()
+        dataset = np.load(f"{self.config.workdir}/datasets/{target}", allow_pickle=True).item()
         datasetScores = dataset["scores"]
         self.mean = np.mean(datasetScores)
         self.std = np.sqrt(np.var(datasetScores))
@@ -628,9 +599,7 @@ class resultsPlotter:
         self.stdTrueMin = (self.trueMin - self.mean) / self.std
 
         # normalize against true answer
-        self.normedEns = 1 - np.abs(self.stdTrueMin - self.stdEns) / np.abs(
-            self.stdTrueMin
-        )
+        self.normedEns = 1 - np.abs(self.stdTrueMin - self.stdEns) / np.abs(self.stdTrueMin)
         self.normedDevs = self.stdDevs / np.abs(self.stdTrueMin)
 
         self.xrange = (
@@ -794,9 +763,7 @@ class resultsPlotter:
         plt.ylabel("Energy x dist")
         plt.legend()
 
-    def plotDiversityMesh(
-        self, fignum=1, subplot=1, nsubplots=1, color="k", label=None
-    ):
+    def plotDiversityMesh(self, fignum=1, subplot=1, nsubplots=1, color="k", label=None):
         plt.figure(fignum)
         square = int(np.ceil(np.sqrt(nsubplots)))
         plt.subplot(square, square, subplot)
@@ -918,9 +885,9 @@ def normalizeDistCutoff(cutoff):
 
 
 def bracket_dot_to_num(sequences, maxlen):
-    '''
+    """
     convert from (((...))) notation to 111222333
-    '''
+    """
     my_seq = np.zeros((len(sequences), maxlen))
     row = 0
 
@@ -941,7 +908,7 @@ def bracket_dot_to_num(sequences, maxlen):
 
 def add_bool_arg(parser, name, default=False):
     group = parser.add_mutually_exclusive_group(required=False)
-    group.add_argument('--' + name, dest=name, action = 'store_true')
-    group.add_argument('--no-' + name, dest=name, action = 'store_false')
-    parser.set_defaults(**{name:default})
+    group.add_argument("--" + name, dest=name, action="store_true")
+    group.add_argument("--no-" + name, dest=name, action="store_false")
+    parser.set_defaults(**{name: default})
     return parser

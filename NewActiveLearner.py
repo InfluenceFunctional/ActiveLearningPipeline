@@ -1,4 +1,3 @@
-from comet_ml import Experiment
 from argparse import Namespace
 from models import modelNet
 from querier import Querier, GFlowNetAgent
@@ -19,209 +18,66 @@ from utils import (
 from torch.utils import data
 import torch.nn.functional as F
 import torch
-from newAgent import SelectionPolicyAgent
 import pandas as pd
 
 import time
-import os
-import glob
 import sys
 import yaml
-from pathlib import Path
 import numpy as np
 
 
 class ActiveLearning:
-    def __init__(self, config):
+    def __init__(self, config, logger=None, workdir="./episode0/"):
         self.pipeIter = None
-        self.homedir = os.getcwd()
+        self.comet = logger
         self.config = config
+        self.workdir = workdir
         self.runNum = self.config.run_num
+        self.pipeIter = 0
         self.oracle = Oracle(
             self.config
         )  # oracle needs to be initialized to initialize toy datasets
-        self.agent = SelectionPolicyAgent(self.config)
         self.querier = Querier(self.config)  # might as well initialize the querier here
-        self.setup()
+        self.oracle.initializeDataset()
         self.getModelSize()
-        # Comet
-        if hasattr(config.al.comet, "project"):
-            self.comet = Experiment(
-                project_name=config.al.comet.project,
-                display_summary_level=0,
-            )
-            if config.al.comet.tags:
-                if isinstance(config.al.comet.tags, list):
-                    self.comet.add_tags(config.al.comet.tags)
-                else:
-                    self.comet.add_tag(config.al.comet.tags)
 
-            self.comet.set_name("run {}".format(config.run_num))
-
-            self.comet.log_parameters(vars(config))
-            with open(Path(self.workDir) / "comet_al.url", "w") as f:
-                f.write(self.comet.url + "\n")
-        else:
-            self.comet = None
         # Save YAML config
-        with open(self.workDir + "/config.yml", "w") as f:
+        with open(self.config.workdir + "/config.yml", "w") as f:
             yaml.dump(numpy2python(namespace2dict(self.config)), f, default_flow_style=False)
 
-    def setup(self):
-        """
-        setup working directory
-        move to relevant directory
-        :return:
-        """
-        if self.config.run_num == 0:  # if making a new workdir
-            self.makeNewWorkingDirectory()
-            self.reset()
-        elif self.config.explicit_run_enumeration is True:
-            self.workDir = (
-                self.config.workdir + "/run%d" % self.config.run_num
-            )  # explicitly enumerate the new run directory
-            os.mkdir(self.workDir)
-            self.reset()
-        else:
-            # move to working dir
-            self.workDir = self.config.workdir + "/" + "run%d" % self.config.run_num
-            os.chdir(self.workDir)
-            printRecord("Resuming run %d" % self.config.run_num)
-
-    def reset(self):
-        os.chdir(self.homedir)
-        # os.mkdir(f"{self.workDir}/ckpts")
-        os.mkdir(f"{self.workDir}/episode{self.agent.episode}")
-        os.mkdir(f"{self.workDir}/episode{self.agent.episode}/ckpts")
-        os.mkdir(f"{self.workDir}/episode{self.agent.episode}/datasets")
-        os.chdir(f"{self.workDir}/episode{self.agent.episode}")  # move to working dir
-        printRecord("Starting Fresh Run %d" % self.runNum)
-        self.oracle.initializeDataset()  # generate toy model dataset
-        self.stateDict = None
-        self.totalLoss = None
-        self.testMinima = None
-        self.stateDictRecord = None
-        self.model_state_reward = None
-        self.dataset_reward = None
-        self.terminal = None
-        self.model = None
-        self.cumulative_reward = None
-        self.model_state_reward_list = None
-        self.dataset_reward_list = None
-        self.bottomTenLoss = None
-        self.action = None
-        self.trueMinimum = None
-        self.oracleRecord = None
-        self.bestScores = None
-        self.prev_iter_best = None
-
-    def makeNewWorkingDirectory(self):  # make working directory
-        """
-        make a new working directory
-        non-overlapping previous entries
-        :return:
-        """
-        workdirs = glob.glob(
-            self.config.workdir + "/" + "run*"
-        )  # check for prior working directories
-        if len(workdirs) > 0:
-            prev_runs = []
-            for i in range(len(workdirs)):
-                prev_runs.append(int(workdirs[i].split("run")[-1]))
-
-            prev_max = max(prev_runs)
-            self.workDir = self.config.workdir + "/" + "run%d" % (prev_max + 1)
-            self.config.workdir = self.workDir
-            os.mkdir(self.workDir)
-            self.runNum = int(prev_max + 1)
-        else:
-            self.workDir = self.config.workdir + "/" + "run1"
-            os.mkdir(self.workDir)
-
-    def runPipeline(self):
-        """
-        run  the active learning pipeline for a number of iterations
-        :return:
-        """
         self.config.dataset_size = self.config.dataset.init_length
-        for _ in range(self.config.rl.episodes):
 
-            if self.config.dataset.type == "toy":
-                self.sampleOracle()  # use the oracle to pre-solve the problem for future benchmarking
+        if self.config.dataset.type == "toy":
+            self.sampleOracle()  # use the oracle to pre-solve the problem for future benchmarking
 
-            self.testMinima = []  # best test loss of models, for each iteration of the pipeline
-            self.bestScores = (
-                []
-            )  # best optima found by the sampler, for each iteration of the pipeline
+        self.testMinima = []  # best test loss of models, for each iteration of the pipeline
+        self.bestScores = []  # best optima found by the sampler, for each iteration of the pipeline
 
-            for self.pipeIter in range(self.config.al.n_iter):
-                printRecord(
-                    f"Starting pipeline iteration #{bcolors.FAIL}%d{bcolors.ENDC}"
-                    % int(self.pipeIter + 1)
-                )
-                if self.pipeIter == (self.config.al.n_iter - 1):
-                    self.terminal = 1
-                else:
-                    self.terminal = 0
-                self.iterate()  # run the pipeline
-                self.saveOutputs()  # save pipeline outputs
+        t0 = time.time()
+        self.retrainModels()
+        printRecord("Initial training took {} seconds".format(int(time.time() - t0)))
 
-            # Train Policy Network
-            self.agent.handleTraining()
-            self.agent.handleEndofEpisode(logger=self.comet)
-            if self.comet:
-                self.comet.log_metric(
-                    name="RL Cumulative Reward",
-                    value=self.model_state_cumulative_reward,
-                    step=self.agent.episode,
-                )
-                self.comet.log_metric(
-                    name="RL Cumulative Score",
-                    value=self.model_state_cumulative_score,
-                    step=self.agent.episode,
-                )
-                self.comet.log_metric(
-                    name="RL Dataset Cumulative Score",
-                    value=self.dataset_cumulative_score,
-                    step=self.agent.episode,
-                )
+        t0 = time.time()
+        self.getModelState()  # run energy-only sampling and create model state dict
+        self.getDatasetState()
+        printRecord("Model state calculation took {} seconds".format(int(time.time() - t0)))
 
-                # self.comet.log_metric(name='RL Agent Training Error', value=self.agent.policy_error, step=self.agent.episode)
-                # self.comet.log_curve(name='RL Agent Training Error', x=list(range(100)), y=self.agent.policy_error, step=self.agent.episode)
-            if self.config.rl.episodes > (
-                self.agent.episode + 1
-            ):  # if we are doing multiple al episodes
-                self.agent.episode += 1
-                self.reset()
-
-            # Save Memory for Agent architecture testing
-            # numpy.save(f'{self.workDir}/memory.npy', self.agent.memory.memory)
-            # numpy.save(f'{self.workDir}/agent_error.npy', self.agent.policy_error)
-
-            self.agent.save_models()
-
-    def iterate(self):
+    def iterate(self, action, terminal):
         """
         run one iteration of the pipeline - train model, sample sequences, select sequences, consult oracle
         :return:
         """
-
-        t0 = time.time()
-        self.retrainModels()
-        printRecord("Retraining took {} seconds".format(int(time.time() - t0)))
-
-        t0 = time.time()
-        self.getModelState(self.terminal)  # run energy-only sampling and create model state dict
-        self.getDatasetReward()
-        printRecord("Model state calculation took {} seconds".format(int(time.time() - t0)))
-
-        if self.terminal == 0:  # skip querying if this is our final pipeline iteration
-
+        self.pipeIter += 1
+        if terminal == 0:  # skip querying if this is our final pipeline iteration
+            printRecord(
+                f"Starting pipeline iteration #{bcolors.FAIL}%d{bcolors.ENDC}"
+                % int(self.pipeIter + 1)
+            )
             t0 = time.time()
             query = self.querier.buildQuery(
                 self.model,
                 self.stateDict,
-                action=self.agent.action_to_map(self.action),
+                action=action,
                 comet=self.comet,
             )  # pick Samples to be scored
             printRecord("Query generation took {} seconds".format(int(time.time() - t0)))
@@ -246,22 +102,16 @@ class ActiveLearning:
             if self.comet:  # report query scores to comet
                 self.comet.log_histogram_3d(energies, name="query energies", step=self.pipeIter)
 
-        # CODE FOR LEARNED POLICY
-        if self.config.al.hyperparams_learning and (self.pipeIter > 0):
-            model_state_prev, model_state_curr = self.agent.updateState(self.stateDict, self.model)
-            if model_state_prev is not None and self.action is not None:
-                self.agent.push_to_buffer(
-                    model_state_prev,
-                    self.action,
-                    model_state_curr,
-                    self.model_state_reward,
-                    self.terminal,
-                )
-            self.action = self.agent.select_action()
-        else:
-            self.action = None
+            t0 = time.time()
+            self.retrainModels()
+            printRecord("Retraining took {} seconds".format(int(time.time() - t0)))
 
-    def getModelState(self, terminal):
+            t0 = time.time()
+            self.getModelState(terminal)  # run energy-only sampling and create model state dict
+            self.getDatasetState()
+            printRecord("Model state calculation took {} seconds".format(int(time.time() - t0)))
+
+    def getModelState(self, terminal=0):
         """
         sample the model
         report on the status of dataset
@@ -505,7 +355,7 @@ class ActiveLearning:
                     name="model state reward", value=self.model_state_reward, step=self.pipeIter
                 )
 
-    def getDatasetReward(self):
+    def getDatasetState(self):
         """
         print the performance of the learner against a known best answer
         :param bestEns:
@@ -513,7 +363,7 @@ class ActiveLearning:
         :return:
         """
         dataset = np.load(
-            "datasets/" + self.config.dataset.oracle + ".npy", allow_pickle=True
+            f"{self.config.workdir}/datasets/{self.config.dataset.oracle}.npy", allow_pickle=True
         ).item()
         energies = dataset["energies"]
 
@@ -1024,7 +874,7 @@ class ActiveLearning:
         :return: n/a
         """
         dataset = np.load(
-            "datasets/" + self.config.dataset.oracle + ".npy", allow_pickle=True
+            f"{self.config.workdir}/datasets/{self.config.dataset.oracle}.npy", allow_pickle=True
         ).item()
         dataset["samples"] = np.concatenate((dataset["samples"], oracleSequences))
         dataset["energies"] = np.concatenate((dataset["energies"], oracleScores))
@@ -1045,9 +895,10 @@ class ActiveLearning:
             + "====================================================================="
             + bcolors.ENDC
         )
-        np.save("datasets/" + self.config.dataset.oracle, dataset)
+        np.save(f"{self.config.workdir}/datasets/{self.config.dataset.oracle}", dataset)
         np.save(
-            "datasets/" + self.config.dataset.oracle + "_iter_{}".format(self.pipeIter), dataset
+            f"{self.config.workdir}/datasets/{self.config.dataset.oracle}_iter_{self.pipeIter}",
+            dataset,
         )
 
         if self.comet:
@@ -1093,7 +944,7 @@ class ActiveLearning:
         """
         truncationFactor = 0.1  # cut off x% of the furthest outliers
         dataset = np.load(
-            "datasets/" + self.config.dataset.oracle + ".npy", allow_pickle=True
+            f"{self.config.workdir}/datasets/{self.config.dataset.oracle}.npy", allow_pickle=True
         ).item()
 
         energies = dataset["energies"]
@@ -1130,7 +981,7 @@ class ActiveLearning:
         """
         # training dataset
         dataset = np.load(
-            "datasets/" + self.config.dataset.oracle + ".npy", allow_pickle=True
+            f"{self.config.workdir}/datasets/{self.config.dataset.oracle}.npy", allow_pickle=True
         ).item()
         dataset = dataset["samples"]
 

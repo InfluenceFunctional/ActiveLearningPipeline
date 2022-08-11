@@ -2,16 +2,15 @@
 This code implements an active learning protocol for global minimization of some function
 
 """
-print("Imports...", end="")
-import sys
+
 from argparse import ArgumentParser
-from comet_ml import Experiment
 import activeLearner
-from utils import *
-import time
+from utils import add_bool_arg, get_config, printRecord
 import warnings
+from rl_train import trainRLAgent
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)  # annoying numpy error
+print("Imports...", end="")
 
 
 def add_args(parser):
@@ -109,9 +108,7 @@ def add_args(parser):
     )  # 'linear' 'potts' 'nupack energy' 'nupack pairs' 'nupack pins' 'nupack open loop' 'nupack motif' #set motif in oracles.py
     args2config.update({"dataset": ["dataset", "oracle"]})
     parser = add_bool_arg(parser, "nupack_energy_reweighting", default=False)
-    args2config.update(
-        {"nupack_energy_reweighting": ["dataset", "nupack_energy_reweighting"]}
-    )
+    args2config.update({"nupack_energy_reweighting": ["dataset", "nupack_energy_reweighting"]})
     parser.add_argument(
         "--nupack_target_motif",
         type=str,
@@ -280,9 +277,7 @@ def add_args(parser):
     args2config.update({"action_state_size": ["al", "action_state_size"]})
     parser.add_argument("--hyperparams_learning", action="store_true")
     args2config.update({"hyperparams_learning": ["al", "hyperparams_learning"]})
-    parser.add_argument(
-        "--tags_al", nargs="*", help="Comet.ml tags", default=[], type=str
-    )
+    parser.add_argument("--tags_al", nargs="*", help="Comet.ml tags", default=[], type=str)
     args2config.update({"tags_al": ["al", "comet", "tags"]})
     # Querier
     parser.add_argument(
@@ -292,9 +287,7 @@ def add_args(parser):
         help="number of selected datapoints of model evaluations",
     )
     args2config.update({"model_state_size": ["querier", "model_state_size"]})
-    parser.add_argument(
-        "--qmodel_opt", type=str, default="SGD", help="optimizer for q-network"
-    )
+    parser.add_argument("--qmodel_opt", type=str, default="SGD", help="optimizer for q-network")
     args2config.update({"qmodel_opt": ["querier", "opt"]})
     parser.add_argument(
         "--qmodel_momentum", type=float, default=0.95, help="momentum for q-network"
@@ -309,9 +302,7 @@ def add_args(parser):
     args2config.update({"qmodel_preload_path": ["querier", "model_ckpt"]})
 
     # GFlowNet
-    parser.add_argument(
-        "--gflownet_device", default="cpu", type=str, help="'cuda' or 'cpu'"
-    )
+    parser.add_argument("--gflownet_device", default="cpu", type=str, help="'cuda' or 'cpu'")
     args2config.update({"gflownet_device": ["gflownet", "device"]})
     parser.add_argument("--gflownet_model_ckpt", default=None, type=str)
     args2config.update({"gflownet_model_ckpt": ["gflownet", "model_ckpt"]})
@@ -335,9 +326,7 @@ def add_args(parser):
         help="Multiplicative factor of the Z learning rate",
     )
     args2config.update({"gflownet_lr_z_mult": ["gflownet", "lr_z_mult"]})
-    parser.add_argument(
-        "--gflownet_learning_rate", default=1e-4, help="Learning rate", type=float
-    )
+    parser.add_argument("--gflownet_learning_rate", default=1e-4, help="Learning rate", type=float)
     args2config.update({"gflownet_learning_rate": ["gflownet", "learning_rate"]})
     parser.add_argument("--gflownet_min_word_len", default=1, type=int)
     args2config.update({"gflownet_min_word_len": ["gflownet", "min_word_len"]})
@@ -393,9 +382,7 @@ def add_args(parser):
     args2config.update({"adam_beta2": ["gflownet", "adam_beta2"]})
     parser.add_argument("--gflownet_momentum", default=0.9, type=float)
     args2config.update({"gflownet_momentum": ["gflownet", "momentum"]})
-    parser.add_argument(
-        "--gflownet_mbsize", default=16, help="Minibatch size", type=int
-    )
+    parser.add_argument("--gflownet_mbsize", default=16, help="Minibatch size", type=int)
     args2config.update({"gflownet_mbsize": ["gflownet", "mbsize"]})
     parser.add_argument("--train_to_sample_ratio", default=1, type=float)
     args2config.update({"train_to_sample_ratio": ["gflownet", "train_to_sample_ratio"]})
@@ -441,9 +428,7 @@ def add_args(parser):
     args2config.update({"gflownet_no_comet": ["gflownet", "comet", "skip"]})
     parser.add_argument("--no_log_times", action="store_true")
     args2config.update({"no_log_times": ["gflownet", "no_log_times"]})
-    parser.add_argument(
-        "--tags_gfn", nargs="*", help="Comet.ml tags", default=[], type=str
-    )
+    parser.add_argument("--tags_gfn", nargs="*", help="Comet.ml tags", default=[], type=str)
     args2config.update({"tags_gfn": ["gflownet", "comet", "tags"]})
     parser.add_argument("--gflownet_annealing", action="store_true")
     args2config.update({"gflownet_annealing": ["gflownet", "annealing"]})
@@ -512,9 +497,7 @@ def add_args(parser):
         default="dropout",
         help="dropout or ensemble",
     )
-    args2config.update(
-        {"proxy_uncertainty_estimation": ["proxy", "uncertainty_estimation"]}
-    )
+    args2config.update({"proxy_uncertainty_estimation": ["proxy", "uncertainty_estimation"]})
     parser.add_argument("--proxy_dropout", type=float, default=0.1)
     args2config.update({"proxy_dropout": ["proxy", "dropout"]})
     parser.add_argument(
@@ -592,7 +575,9 @@ def process_config(config):
     if not config.workdir and config.machine == "cluster":
         config.workdir = "/home/kilgourm/scratch/learnerruns"
     elif not config.workdir and config.machine == "local":
-        config.workdir = "/home/mkilgour/learnerruns"  # "C:/Users\mikem\Desktop/activeLearningRuns"  #
+        config.workdir = (
+            "/home/mkilgour/learnerruns"  # "C:/Users\mikem\Desktop/activeLearningRuns"  #
+        )
     return config
 
 
@@ -606,21 +591,24 @@ if __name__ == "__main__":
     config = process_config(config)
     print("Args:\n" + "\n".join([f"    {k:20}: {v}" for k, v in vars(config).items()]))
     # TODO: save final config in workdir
-    al = activeLearner.ActiveLearning(config)
-    if config.al.mode == "initalize":
-        printRecord("Initialized!")
-    elif config.al.mode == "active learning":
-        al.runPipeline()
-    elif config.al.mode == "deploy":
-        al.runPipeline()
-    elif config.al.mode == "sampling only":
-        sampleDict = al.runPureSampler()
-    elif config.al.mode == "train_rl":
-        al.runPipeline()
-    elif config.al.mode == "rl_gym_test":
-        from newAgent import train_toy_agent
-        train_toy_agent(config)
-    '''elif config.al.mode == "rl_gym_test":
+    if config.al.mode == "train_rl":
+        trainRLAgent(config)
+    else:
+        al = activeLearner.ActiveLearning(config)
+        if config.al.mode == "initalize":
+            printRecord("Initialized!")
+        elif config.al.mode == "active learning":
+            al.runPipeline()
+        elif config.al.mode == "deploy":
+            al.runPipeline()
+        elif config.al.mode == "sampling only":
+            sampleDict = al.runPureSampler()
+
+        elif config.al.mode == "rl_gym_test":
+            from newAgent import train_toy_agent
+
+            train_toy_agent(config)
+    """elif config.al.mode == "rl_gym_test":
         from Agent import train_toy_agent
         import cProfile as profile
         import pstats
@@ -630,4 +618,4 @@ if __name__ == "__main__":
         stats = pstats.Stats(prof).strip_dirs().sort_stats("cumtime")
         prof.disable()
         # print profiling output
-        stats.print_stats(30) # top 10 rows'''
+        stats.print_stats(30) # top 10 rows"""

@@ -4,6 +4,7 @@ Classes to represent aptamers environments
 import itertools
 import numpy as np
 
+
 class AptamerSeq:
     """
     Aptamer sequence environment
@@ -67,9 +68,7 @@ class AptamerSeq:
         else:
             self.proxy = self.oracle
         self.reward = (
-            lambda x: [0]
-            if not self.done
-            else self.proxy2reward(self.proxy(self.seq2oracle(x)))
+            lambda x: [0] if not self.done else self.proxy2reward(self.proxy(self.seq2oracle(x)))
         )
         self.allow_backward = allow_backward
         self._true_density = None
@@ -350,12 +349,10 @@ class AptamerSeq:
         """
         if self._true_density is not None:
             return self._true_density
-        if self.nalphabet ** self.max_seq_length > max_states:
+        if self.nalphabet**self.max_seq_length > max_states:
             return (None, None, None)
         seq_all = np.int32(
-            list(
-                itertools.product(*[list(range(self.nalphabet))] * self.max_seq_length)
-            )
+            list(itertools.product(*[list(range(self.nalphabet))] * self.max_seq_length))
         )
         traj_rewards, seq_end = zip(
             *[

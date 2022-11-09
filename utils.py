@@ -461,7 +461,7 @@ def doAgglomerativeClustering(samples, energies, uncertainties, dict_size, cutof
     return clusters, clusterEns, clusterVars
 
 
-def filterOutputs(outputs, additionalEntries=None):
+def filterOutputs(outputs, debug=True, additionalEntries=None):
     """
     run filtering on particular outputs dictionaries
     """
@@ -489,7 +489,8 @@ def filterOutputs(outputs, additionalEntries=None):
         "energies": energies[filteredInds],
         "uncertainties": uncertainties[filteredInds],
     }
-    printRecord("Sampler outputs after filtering - best energy = {:.4f}".format(np.amin(energies)))
+    if debug:
+        printRecord("Sampler outputs after filtering - best energy = {:.4f}".format(np.amin(energies)))
 
     return filteredOutputs
 

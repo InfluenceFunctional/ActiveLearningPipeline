@@ -167,11 +167,12 @@ class Querier:
 
         if len(samples) < nQueries:
             missing_samples = nQueries - len(samples)
-            printRecord(
-                "Querier did not produce enough samples, adding {} random entries, consider adjusting query size and/or cutoff".format(
-                    missing_samples
+            if self.config.debug:
+                printRecord(
+                    "Querier did not produce enough samples, adding {} random entries, consider adjusting query size and/or cutoff".format(
+                        missing_samples
+                    )
                 )
-            )
 
         while (
             len(samples) < nQueries
@@ -243,8 +244,9 @@ class Querier:
             )
             self.mcmcSampler = Sampler(self.config, al_iter, scoreFunction, gammas)
             outputs = self.mcmcSampler.sample(model, useOracle=useOracle)
-            outputs = filterOutputs(outputs)
-            printRecord("MCMC sampling took {} seconds".format(int(time.time() - t0)))
+            outputs = filterOutputs(outputs, self.config.debug)
+            if self.config.debug:
+                printRecord("MCMC sampling took {} seconds".format(int(time.time() - t0)))
 
         elif method.lower() == "random":
             t0 = time.time()
@@ -268,9 +270,10 @@ class Querier:
                 "scores": scores,
             }
             outputs = self.doAnnealing(scoreFunction, model, outputs, seed=al_iter)
-            printRecord(
-                "Random sampling and annealing took {} seconds".format(int(time.time() - t0))
-            )
+            if self.config.debug:
+                printRecord(
+                    "Random sampling and annealing took {} seconds".format(int(time.time() - t0))
+                )
 
         elif method.lower() == "gflownet":
             gflownet = GFlowNetAgent(
@@ -299,7 +302,7 @@ class Querier:
                     self.config.gflownet.n_samples, int(time.time() - t0)
                 )
             )
-            outputs = filterOutputs(outputs)
+            outputs = filterOutputs(outputs, self.config.debug)
 
             if self.config.gflownet.annealing:
                 outputs = self.doAnnealing(scoreFunction, model, outputs, seed=al_iter)
@@ -321,14 +324,16 @@ class Querier:
             initConfigs, model, useOracle=useOracle, seed=self.config.seeds.sampler + seed
         )
 
-        filteredOutputs = filterOutputs(outputs, additionalEntries=annealedOutputs)
+        filteredOutputs = filterOutputs(
+            outputs, self.config.debug, additionalEntries=annealedOutputs
+        )
 
         nAddedSamples = int(len(filteredOutputs["samples"]) - len(outputs["samples"]))
-
-        printRecord(
-            "Post-sample annealing added {} samples in {} seconds".format(
-                nAddedSamples, int(time.time() - t0)
+        if self.config.debug:
+            printRecord(
+                "Post-sample annealing added {} samples in {} seconds".format(
+                    nAddedSamples, int(time.time() - t0)
+                )
             )
-        )
 
         return filteredOutputs

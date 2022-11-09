@@ -226,13 +226,14 @@ class modelNet:
             > self.err_te_hist[-self.config.history]
         ):  #
             self.converged = 1
-            printRecord(
-                bcolors.WARNING
-                + "Model converged after {} epochs - test loss increasing at {:.4f}".format(
-                    self.epochs + 1, min(self.err_te_hist)
+            if self.config.debug:
+                printRecord(
+                    bcolors.WARNING
+                    + "Model converged after {} epochs - test loss increasing at {:.4f}".format(
+                        self.epochs + 1, min(self.err_te_hist)
+                    )
+                    + bcolors.ENDC
                 )
-                + bcolors.ENDC
-            )
 
         # check if test loss is unchanging
         if (
@@ -244,23 +245,25 @@ class modelNet:
             < eps
         ):
             self.converged = 1
-            printRecord(
-                bcolors.WARNING
-                + "Model converged after {} epochs - hit test loss convergence criterion at {:.4f}".format(
-                    self.epochs + 1, min(self.err_te_hist)
+            if self.config.debug:
+                printRecord(
+                    bcolors.WARNING
+                    + "Model converged after {} epochs - hit test loss convergence criterion at {:.4f}".format(
+                        self.epochs + 1, min(self.err_te_hist)
+                    )
+                    + bcolors.ENDC
                 )
-                + bcolors.ENDC
-            )
 
         if self.epochs >= self.config.proxy.max_epochs:
             self.converged = 1
-            printRecord(
-                bcolors.WARNING
-                + "Model converged after {} epochs- epoch limit was hit with test loss {:.4f}".format(
-                    self.epochs + 1, min(self.err_te_hist)
+            if self.config.debug:
+                printRecord(
+                    bcolors.WARNING
+                    + "Model converged after {} epochs- epoch limit was hit with test loss {:.4f}".format(
+                        self.epochs + 1, min(self.err_te_hist)
+                    )
+                    + bcolors.ENDC
                 )
-                + bcolors.ENDC
-            )
 
         # if self.converged == 1:
         # printRecord(f'{bcolors.OKCYAN}Model training converged{bcolors.ENDC} after {bcolors.OKBLUE}%d{bcolors.ENDC}' %self.epochs + f" epochs and with a final test loss of {bcolors.OKGREEN}%.3f{bcolors.ENDC}" % np.amin(np.asarray(self.err_te_hist)))
@@ -394,6 +397,7 @@ class buildDataset:
     """
 
     def __init__(self, config):
+        # Load most recent AL iteration dataset
         dataset = np.load(
             f"{config.workdir}/datasets/{config.dataset.oracle}.npy", allow_pickle=True
         )

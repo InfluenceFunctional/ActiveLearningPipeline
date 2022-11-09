@@ -5,8 +5,9 @@ from newAgent import SelectionPolicyAgent
 import torch
 from comet_ml import Experiment
 import numpy as np
-from utils import printRecord
 from pathlib import Path
+import time
+import copy
 
 """
 This Script will Train a Reinforcement Learning Agent.
@@ -37,26 +38,89 @@ Runs
 """
 
 
+def getBaseline(config, rundir):
+    """Runs the ActiveLearningPipeline with query_mode set to heuristic but
+    outputs performance metrics like the evaluation pipeline."""
+    trial_episode_scores = []
+    trial_model_state_score = []
+    trial_dataset_score = []
+
+    baseline_config = copy.deepcopy(config)
+    baseline_config.al.query_mode = "heuristic"
+    env = AptamerEnvironment(baseline_config, rundir=rundir)
+    torch.manual_seed(baseline_config.rl.seed)
+
+    for i_episode in range(1):
+        episode_score = 0
+        _, _ = env.reset(i_episode)
+        done = False
+        while not done:
+            _, reward, done, env_info = env.step(None)
+            episode_score += reward
+
+        trial_episode_scores += [episode_score]
+        trial_model_state_score += [env_info["model_state_cumul_score"]]
+        trial_dataset_score += [env_info["dataset_cumul_score"]]
+    return (
+        np.mean(trial_episode_scores),
+        np.mean(trial_model_state_score),
+        np.mean(trial_dataset_score),
+    )
+
+
+def get_normalized_actions(actions):
+    tradeoff = 0
+    tradeoffs = []
+    binary_to_policy = np.array(((1, 1, 1, 0, 0, 0, -1, -1, -1), (1, 0, -1, 1, 0, -1, 1, 0, -1)))
+
+    c1 = [0.5]
+    c2 = [0.5]
+    for action_id in actions:
+        action_map = torch.zeros(9, dtype=int)
+        action_map[action_id] = 1
+        # action 1 is for dist cutoff modulation, action 2 is for c1-c2 tradeoff
+        action = binary_to_policy @ np.asarray(action_map)
+        tradeoff += action[1] * 0.1  # modulate by 0.1
+        tradeoffs += [tradeoff]
+        c1 += [0.5 - tradeoff / 2]
+        c2 += [0.5 + tradeoff / 2]
+
+    return c1, c2, tradeoffs  # , c1_norm, c2_norm
+
+
 def trainRLAgent(config):
-    workdir, _ = makeNewWorkingDirectory(
+
+    rundir, _ = makeNewWorkingDirectory(
         config.workdir,
         explicit_run_enumeration=config.explicit_run_enumeration,
         runNum=config.run_num,
     )
-    config.workdir = workdir  # I'M RESETTING the workdir CONFIG PROPERTY
-    logger = setupLogger(config, workdir)
+    config.workdir = rundir  # I'M RESETTING the workdir CONFIG PROPERTY
+    logger = setupLogger(config, rundir)
+
+    if config.rl.calculate_baseline:
+        baseline_folder_dir = f"{rundir}/Baseline/"
+        os.mkdir(baseline_folder_dir)
+        baseline_episode_score, baseline_model_state_score, baseline_dataset_score = getBaseline(
+            config, rundir=f"{rundir}/Baseline"
+        )
+        logger.log_metric(value=baseline_episode_score, name="Baseline Episode Score")
+        logger.log_metric(value=baseline_model_state_score, name="Baseline Model State Score")
+        logger.log_metric(value=baseline_dataset_score, name="Baseline Dataset Score")
+
     agent = SelectionPolicyAgent(config)
-    env = AptamerEnvironment(config, logger, workdir)
+    env = AptamerEnvironment(config, logger, rundir)
     torch.manual_seed(config.rl.seed)
 
     trial_episode_scores = []
     avg_grad_value = None
-    debug_log = True
 
     for i_episode in range(config.rl.episodes):
+        t0 = time.time()
         episode_score = 0
-        state, _ = env.reset()
+        state, _ = env.reset(i_episode)
         agent.updateState(state)
+        actions = []
 
         # agent.updateState(state, proxy_model)
         done = False
@@ -64,7 +128,8 @@ def trainRLAgent(config):
         while not done:
             episode_length += 1
             action = agent.select_action()
-            new_state, reward, done, _ = env.step(agent.action_to_map(action))
+            actions += [action]
+            new_state, reward, done, env_info = env.step(agent.action_to_map(action))
             episode_score += reward
 
             # save state, action, reward sequence
@@ -72,32 +137,22 @@ def trainRLAgent(config):
             state = new_state
             agent.updateState(state)
 
-        if (
-            len(agent.memory) >= config.rl.min_memory
-            and (i_episode % config.rl.dqn_train_frequency == 0)
-            and i_episode >= config.rl.learning_start
-        ):
-            agent.policy_error = []
-            agent.train()
-            agent.update_target_network()
-            avg_grad_value = torch.mean(
-                torch.stack(
-                    [torch.mean(abs(param.grad)) for param in agent.policy_net.parameters()]
-                )
-            )
+        # Train Agent if conditions are met.
+        agent.handleTraining(i_episode)
 
         avg_param_value = torch.mean(
             torch.stack([torch.mean(abs(param)) for param in agent.policy_net.parameters()])
         )
 
         # Update epsilon and learning rate
-        agent.scheduler.step()
         agent.update_epsilon()
-
+        agent.scheduler.step()
         # Logging
         trial_episode_scores += [episode_score]
         last_100_avg = np.mean(trial_episode_scores[-100:])
-        if debug_log:
+
+        print(f"Episode {i_episode} took {int(time.time() - t0)} seconds\n")
+        if config.rl.log_rl_to_console:
             if avg_grad_value:
                 print(
                     f"E {i_episode} scored {episode_score:.2f}, ep_length {episode_length}, avg {last_100_avg:.2f}, avg param {avg_param_value:.2f}",
@@ -108,10 +163,24 @@ def trainRLAgent(config):
                 print(
                     f"E {i_episode} scored {episode_score:.2f}, ep_length {episode_length}, avg {last_100_avg:.2f}, avg param {avg_param_value:.2f}"
                 )
-        if i_episode % config.rl.eval_interval == 0:
-            mean_eval_score = agent.evaluate(env)
-            logger.log_metric(name="Mean Eval Score", value=mean_eval_score, step=i_episode)
 
+        if i_episode % config.rl.eval_interval == 0 and i_episode != 0:
+            mean_eval_score = agent.evaluate(env, config.rl.eval_steps)
+            logger.log_metric(name="Mean Eval Score", value=mean_eval_score, step=i_episode)
+            c1, c2, _ = get_normalized_actions(actions)
+            logger.log_curve(
+                name=f"Ep {i_episode} - Energy",
+                x=range(10),
+                y=c1,
+                step=i_episode,
+            )
+
+        # logger.log_curve(
+        #    name=f"Ep {i_episode} - Uncertainty",
+        #    x=list(range(10)),
+        #    y=c2,
+        #    step=i_episode,
+        # )
         logger.log_metric(name="Learning Rate", value=agent.scheduler.get_last_lr(), step=i_episode)
         logger.log_metric(name="Episode Duration", value=episode_length, step=i_episode)
         logger.log_metric(name="Episode Score", value=episode_score, step=i_episode)
@@ -121,33 +190,14 @@ def trainRLAgent(config):
         logger.log_metric(
             name="Mean Training Replay Loss", value=np.mean(agent.policy_error), step=i_episode
         )
-
-
-# Train Policy Network
-
-
-def endOfEpisode(agent, comet=None):
-    agent.handleTraining()
-    agent.handleEndofEpisode(logger=comet)
-    if comet:
-        comet.log_metric(
-            name="RL Cumulative Reward",
-            value=model_state_cumulative_reward,
-            step=agent.episode,
+        logger.log_metric(
+            name="Model State Cumulative Score",
+            value=env_info["model_state_cumul_score"],
+            step=i_episode,
         )
-        comet.log_metric(
-            name="RL Cumulative Score",
-            value=model_state_cumulative_score,
-            step=agent.episode,
+        logger.log_metric(
+            name="Dataset Cumulative Score", value=env_info["dataset_cumul_score"], step=i_episode
         )
-        comet.log_metric(
-            name="RL Dataset Cumulative Score",
-            value=dataset_cumulative_score,
-            step=agent.episode,
-        )
-    if config.rl.episodes > (agent.episode + 1):  # if we are doing multiple al episodes
-        agent.episode += 1
-        reset()
 
     agent.save_models()
 
@@ -179,8 +229,6 @@ def makeNewWorkingDirectory(
             newdir = f"{rundir}/run{runNum}"
             os.mkdir(newdir)
 
-    os.mkdir(f"{newdir}/datasets")
-    os.mkdir(f"{newdir}/ckpts")
     return newdir, runNum
 
 
@@ -200,3 +248,4 @@ def setupLogger(config, workdir):
     logger.set_name("run {}".format(config.run_num))
     with open(Path(workdir) / "comet_al.url", "w") as f:
         f.write(logger.url + "\n")
+    return logger

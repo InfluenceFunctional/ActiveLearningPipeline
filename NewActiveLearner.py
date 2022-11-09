@@ -1,6 +1,6 @@
 from argparse import Namespace
 from models import modelNet
-from querier import Querier, GFlowNetAgent
+from querier import Querier
 from sampler import Sampler
 from oracle import Oracle
 from utils import (
@@ -11,8 +11,6 @@ from utils import (
     numbers2letters,
     filterOutputs,
     binaryDistance,
-    generateRandomSamples,
-    doAgglomerativeClustering,
     get_n_params,
 )
 from torch.utils import data
@@ -27,11 +25,13 @@ import numpy as np
 
 
 class ActiveLearning:
-    def __init__(self, config, logger=None, workdir="./episode0/"):
+    def __init__(self, config, logger=None, data_to_log=None, episode=None):
         self.pipeIter = None
+        self.episode = episode
+        self.data_to_log = data_to_log
         self.comet = logger
         self.config = config
-        self.workdir = workdir
+        self.workdir = config.workdir
         self.runNum = self.config.run_num
         self.pipeIter = 0
         self.oracle = Oracle(
@@ -55,12 +55,14 @@ class ActiveLearning:
 
         t0 = time.time()
         self.retrainModels()
-        printRecord("Initial training took {} seconds".format(int(time.time() - t0)))
+        if self.config.debug:
+            printRecord(f"Initial training took {int(time.time() - t0)} seconds")
 
         t0 = time.time()
         self.getModelState()  # run energy-only sampling and create model state dict
         self.getDatasetState()
-        printRecord("Model state calculation took {} seconds".format(int(time.time() - t0)))
+        if self.config.debug:
+            printRecord(f"Model state calculation took {int(time.time() - t0)} seconds")
 
     def iterate(self, action, terminal):
         """
@@ -69,10 +71,10 @@ class ActiveLearning:
         """
         self.pipeIter += 1
         if terminal == 0:  # skip querying if this is our final pipeline iteration
-            printRecord(
-                f"Starting pipeline iteration #{bcolors.FAIL}%d{bcolors.ENDC}"
-                % int(self.pipeIter + 1)
-            )
+            if self.config.debug:
+                printRecord(
+                    f"Starting pipeline iteration #{bcolors.FAIL}{int(self.pipeIter + 1)}{bcolors.ENDC}"
+                )
             t0 = time.time()
             query = self.querier.buildQuery(
                 self.model,
@@ -80,36 +82,42 @@ class ActiveLearning:
                 action=action,
                 comet=self.comet,
             )  # pick Samples to be scored
-            printRecord("Query generation took {} seconds".format(int(time.time() - t0)))
+            if self.config.debug:
+                printRecord(f"Query generation took {int(time.time() - t0)} seconds")
 
             t0 = time.time()
             energies = self.oracle.score(query)  # score Samples
-            printRecord("Oracle scoring took {} seconds".format(int(time.time() - t0)))
-            printRecord(
-                "Oracle scored"
-                + bcolors.OKBLUE
-                + " {} ".format(len(energies))
-                + bcolors.ENDC
-                + "queries with average score of"
-                + bcolors.OKGREEN
-                + " {:.3f}".format(np.average(energies))
-                + bcolors.ENDC
-                + " and minimum score of {:.3f}".format(np.amin(energies))
-            )
+            if self.config.debug:
+                printRecord(f"Oracle scoring took {int(time.time() - t0)} seconds")
+                printRecord(
+                    "Oracle scored"
+                    + bcolors.OKBLUE
+                    + " {} ".format(len(energies))
+                    + bcolors.ENDC
+                    + "queries with average score of"
+                    + bcolors.OKGREEN
+                    + " {:.3f}".format(np.average(energies))
+                    + bcolors.ENDC
+                    + " and minimum score of {:.3f}".format(np.amin(energies))
+                )
 
             self.updateDataset(query, energies)  # add scored Samples to dataset
 
-            if self.comet:  # report query scores to comet
+            if self.comet and (
+                "Query_Energies" in self.data_to_log
+            ):  # report query scores to comet
                 self.comet.log_histogram_3d(energies, name="query energies", step=self.pipeIter)
 
             t0 = time.time()
             self.retrainModels()
-            printRecord("Retraining took {} seconds".format(int(time.time() - t0)))
+            if self.config.debug:
+                printRecord("Retraining took {} seconds".format(int(time.time() - t0)))
 
             t0 = time.time()
             self.getModelState(terminal)  # run energy-only sampling and create model state dict
             self.getDatasetState()
-            printRecord("Model state calculation took {} seconds".format(int(time.time() - t0)))
+            if self.config.debug:
+                printRecord("Model state calculation took {} seconds".format(int(time.time() - t0)))
 
     def getModelState(self, terminal=0):
         """
@@ -131,7 +139,7 @@ class ActiveLearning:
                 self.model, scoreFunction=[1, 0], al_iter=self.pipeIter, method_overwrite="random"
             )  # sample existing optima cheaply with random + annealing
 
-        sampleDict = filterOutputs(sampleDict)
+        sampleDict = filterOutputs(sampleDict, self.config.debug)
 
         # we used to do clustering here, now strictly argsort direct from the sampler
         sort_inds = np.argsort(sampleDict["energies"])  # sort by energy
@@ -165,52 +173,56 @@ class ActiveLearning:
             "budget": self.config.al.n_iter,
             "model state reward": self.model_state_reward,
         }
-
-        printRecord(
-            "%d " % self.config.proxy.ensemble_size
-            + f"Model ensemble training converged with average test loss of {bcolors.OKCYAN}%.5f{bcolors.ENDC}"
-            % np.average(np.asarray(self.testMinima[-self.config.proxy.ensemble_size :]))
-            + f" and std of {bcolors.OKCYAN}%.3f{bcolors.ENDC}"
-            % (np.sqrt(np.var(self.testMinima[-self.config.proxy.ensemble_size :])))
-        )
-        printRecord(
-            "Model state contains {} samples".format(self.config.querier.model_state_size)
-            + " with minimum energy"
-            + bcolors.OKGREEN
-            + " {:.2f},".format(np.amin(energies))
-            + bcolors.ENDC
-            + " average energy"
-            + bcolors.OKGREEN
-            + " {:.2f},".format(np.average(energies[: self.config.querier.model_state_size]))
-            + bcolors.ENDC
-            + " and average std dev"
-            + bcolors.OKCYAN
-            + " {:.2f}".format(np.average(uncertainties[: self.config.querier.model_state_size]))
-            + bcolors.ENDC
-        )
-        printRecord(
-            "Best sample in model state is {}".format(numbers2letters(samples[np.argmin(energies)]))
-        )
-        printRecord(
-            "Sample average mutual distance is "
-            + bcolors.WARNING
-            + "{:.2f} ".format(np.average(internalDist))
-            + bcolors.ENDC
-            + "dataset distance is "
-            + bcolors.WARNING
-            + "{:.2f} ".format(np.average(datasetDist))
-            + bcolors.ENDC
-            + "and overall distance estimated at "
-            + bcolors.WARNING
-            + "{:.2f}".format(np.average(randomDist))
-            + bcolors.ENDC
-        )
+        if self.config.debug:
+            printRecord(
+                "%d " % self.config.proxy.ensemble_size
+                + f"Model ensemble training converged with average test loss of {bcolors.OKCYAN}%.5f{bcolors.ENDC}"
+                % np.average(np.asarray(self.testMinima[-self.config.proxy.ensemble_size :]))
+                + f" and std of {bcolors.OKCYAN}%.3f{bcolors.ENDC}"
+                % (np.sqrt(np.var(self.testMinima[-self.config.proxy.ensemble_size :])))
+            )
+            printRecord(
+                "Model state contains {} samples".format(self.config.querier.model_state_size)
+                + " with minimum energy"
+                + bcolors.OKGREEN
+                + " {:.2f},".format(np.amin(energies))
+                + bcolors.ENDC
+                + " average energy"
+                + bcolors.OKGREEN
+                + " {:.2f},".format(np.average(energies[: self.config.querier.model_state_size]))
+                + bcolors.ENDC
+                + " and average std dev"
+                + bcolors.OKCYAN
+                + " {:.2f}".format(
+                    np.average(uncertainties[: self.config.querier.model_state_size])
+                )
+                + bcolors.ENDC
+            )
+            printRecord(
+                "Best sample in model state is {}".format(
+                    numbers2letters(samples[np.argmin(energies)])
+                )
+            )
+            printRecord(
+                "Sample average mutual distance is "
+                + bcolors.WARNING
+                + "{:.2f} ".format(np.average(internalDist))
+                + bcolors.ENDC
+                + "dataset distance is "
+                + bcolors.WARNING
+                + "{:.2f} ".format(np.average(datasetDist))
+                + bcolors.ENDC
+                + "and overall distance estimated at "
+                + bcolors.WARNING
+                + "{:.2f}".format(np.average(randomDist))
+                + bcolors.ENDC
+            )
 
         if (
             self.config.al.large_model_evaluation
         ):  # we can quickly check the test error against a huge random dataset
             self.largeModelEvaluation()
-            if self.comet:
+            if self.comet and ("Proxy_Evaluation_Loss" in self.data_to_log):
                 self.comet.log_metric(
                     name="proxy loss on best 10% of large random dataset",
                     value=self.bottomTenLoss[0],
@@ -227,7 +239,7 @@ class ActiveLearning:
         else:
             self.stateDictRecord.append(self.stateDict)
 
-        if self.comet:
+        if self.comet and ("Model_State_Calculation" in self.data_to_log):
             self.comet.log_histogram_3d(
                 sampleDict["energies"],
                 name="model state total sampling run energies",
@@ -260,8 +272,7 @@ class ActiveLearning:
             self.comet.log_histogram_3d(
                 self.testMinima[-1], name="proxy model test minima", step=self.pipeIter
             )
-
-        self.logTopK(sampleDict, prefix="Model state ")
+            self.logTopK(sampleDict, prefix="Model state ")
 
     def getModelStateReward(self, bestEns, bestStdDevs):
         """
@@ -296,19 +307,20 @@ class ActiveLearning:
             self.model_state_reward_list[self.pipeIter] = self.model_state_reward
             self.model_state_cumulative_reward = sum(self.model_state_reward_list)
             self.model_state_prev_iter_best.append(best_adjusted_energy)
-            printRecord(
-                "Iteration best uncertainty-adjusted result = {:.3f}, previous best = {:.3f}, reward = {:.3f}, cumulative reward = {:.3f}".format(
-                    best_adjusted_energy,
-                    self.model_state_prev_iter_best[-2],
-                    self.model_state_reward,
-                    self.model_state_cumulative_reward,
+            if self.config.debug:
+                printRecord(
+                    "Iteration best uncertainty-adjusted result = {:.3f}, previous best = {:.3f}, reward = {:.3f}, cumulative reward = {:.3f}".format(
+                        best_adjusted_energy,
+                        self.model_state_prev_iter_best[-2],
+                        self.model_state_reward,
+                        self.model_state_cumulative_reward,
+                    )
                 )
-            )
 
         if (
             self.config.dataset.type == "toy"
         ):  # if it's  a toy dataset, report the cumulative performance against the known minimum
-            stdTrueMinimum = (self.trueMinimum - self.model.mean) / self.model.std
+            # stdTrueMinimum = (self.trueMinimum - self.model.mean) / self.model.std
             if self.pipeIter == 0:
                 self.model_state_abs_score = [
                     1 - np.abs(self.trueMinimum - best_adjusted_energy) / np.abs(self.trueMinimum)
@@ -329,30 +341,33 @@ class ActiveLearning:
                 self.model_state_normed_cumulative_score = (
                     self.model_state_cumulative_score / xaxis[-1]
                 )
-                printRecord(
-                    "Total score is {:.3f} and {:.5f} per-sample after {} samples".format(
-                        self.model_state_abs_score[-1],
-                        self.model_state_normed_cumulative_score,
-                        xaxis[-1],
+                if self.config.debug:
+                    printRecord(
+                        "Total score is {:.3f} and {:.5f} per-sample after {} samples".format(
+                            self.model_state_abs_score[-1],
+                            self.model_state_normed_cumulative_score,
+                            xaxis[-1],
+                        )
                     )
-                )
             else:
                 print("Error! Pipeline iteration cannot be negative")
                 sys.exit()
 
-            if self.comet:
+            if self.comet and ("Model_State_Score" in self.data_to_log):
                 self.comet.log_metric(
-                    name="model state absolute score",
+                    name=f"Ep {self.episode} - model state absolute score",
                     value=self.model_state_abs_score[-1],
                     step=self.pipeIter,
                 )
                 self.comet.log_metric(
-                    name="model state cumulative score",
+                    name=f"Ep {self.episode} - model state cumulative score",
                     value=self.model_state_cumulative_score,
                     step=self.pipeIter,
                 )
                 self.comet.log_metric(
-                    name="model state reward", value=self.model_state_reward, step=self.pipeIter
+                    name=f"Ep {self.episode} - model state reward",
+                    value=self.model_state_reward,
+                    step=self.pipeIter,
                 )
 
     def getDatasetState(self):
@@ -366,12 +381,12 @@ class ActiveLearning:
             f"{self.config.workdir}/datasets/{self.config.dataset.oracle}.npy", allow_pickle=True
         ).item()
         energies = dataset["energies"]
-
-        printRecord(
-            "Best sample in dataset is {}".format(
-                numbers2letters(dataset["samples"][np.argmin(dataset["energies"])])
+        if self.config.debug:
+            printRecord(
+                "Best sample in dataset is {}".format(
+                    numbers2letters(dataset["samples"][np.argmin(dataset["energies"])])
+                )
             )
-        )
 
         best_energy = np.amin(energies)
         if self.pipeIter == 0:
@@ -388,19 +403,20 @@ class ActiveLearning:
             self.dataset_reward_list[self.pipeIter] = self.dataset_reward
             self.dataset_cumulative_reward = sum(self.dataset_reward_list)
             self.dataset_prev_iter_best.append(best_energy)
-            printRecord(
-                "Dataset evolution metrics = {:.3f}, previous best = {:.3f}, reward = {:.3f}, cumulative reward = {:.3f}".format(
-                    best_energy,
-                    self.dataset_prev_iter_best[-2],
-                    self.dataset_reward,
-                    self.dataset_cumulative_reward,
+            if self.config.debug:
+                printRecord(
+                    "Dataset evolution metrics = {:.3f}, previous best = {:.3f}, reward = {:.3f}, cumulative reward = {:.3f}".format(
+                        best_energy,
+                        self.dataset_prev_iter_best[-2],
+                        self.dataset_reward,
+                        self.dataset_cumulative_reward,
+                    )
                 )
-            )
 
         if (
             self.config.dataset.type == "toy"
         ):  # if it's  a toy dataset, report the cumulative performance against the known minimum
-            stdTrueMinimum = (self.trueMinimum - self.model.mean) / self.model.std
+            # stdTrueMinimum = (self.trueMinimum - self.model.mean) / self.model.std
             if self.pipeIter == 0:
                 self.dataset_abs_score = [
                     1 - np.abs(self.trueMinimum - best_energy) / np.abs(self.trueMinimum)
@@ -419,16 +435,19 @@ class ActiveLearning:
                     y=np.asarray(self.dataset_abs_score), x=xaxis
                 )
                 self.dataset_normed_cumulative_score = self.dataset_cumulative_score / xaxis[-1]
-                printRecord(
-                    "Dataset Total score is {:.3f} and {:.5f} per-sample after {} samples".format(
-                        self.dataset_abs_score[-1], self.dataset_normed_cumulative_score, xaxis[-1]
+                if self.config.debug:
+                    printRecord(
+                        "Dataset Total score is {:.3f} and {:.5f} per-sample after {} samples".format(
+                            self.dataset_abs_score[-1],
+                            self.dataset_normed_cumulative_score,
+                            xaxis[-1],
+                        )
                     )
-                )
             else:
                 print("Error! Pipeline iteration cannot be negative")
                 sys.exit()
 
-            if self.comet:
+            if self.comet and ("Dataset_State_Scores" in self.data_to_log):
                 self.comet.log_metric(
                     name="dataset absolute score",
                     value=self.dataset_abs_score[-1],
@@ -449,7 +468,7 @@ class ActiveLearning:
             self.resetModel(i)  # reset between ensemble estimators EVERY ITERATION of the pipeline
             self.model.converge()  # converge model
             testMins.append(np.amin(self.model.err_te_hist))
-            if self.comet:
+            if self.comet and ("Proxy_Train_Loss" in self.data_to_log):
                 tr_hist = self.model.err_tr_hist
                 te_hist = self.model.err_te_hist
                 epochs = len(te_hist)
@@ -499,7 +518,8 @@ class ActiveLearning:
     def getModelSize(self):
         self.model = modelNet(self.config, 0)
         nParams = get_n_params(self.model.model)
-        printRecord("Proxy model has {} parameters".format(int(nParams)))
+        if self.config.debug:
+            printRecord("Proxy model has {} parameters".format(int(nParams)))
         del self.model
 
     def largeModelEvaluation(self):
@@ -564,169 +584,14 @@ class ActiveLearning:
             + "on {} toy dataset samples".format(numSamples)
         )
 
-    def runPureSampler(self):
-        ti = time.time()
-        self.model = None
-        self.pipeIter = 0
-        if self.config.al.sample_method == "mcmc":
-            gammas = np.logspace(
-                self.config.mcmc.stun_min_gamma,
-                self.config.mcmc.stun_max_gamma,
-                self.config.mcmc.num_samplers,
-            )
-            mcmcSampler = Sampler(self.config, self.config.seeds.sampler, [1, 0], gammas)
-            sampleDict = mcmcSampler.sample(self.model, useOracle=True)  # do a genuine search
-        elif self.config.al.sample_method == "random":
-            samples = generateRandomSamples(
-                self.config.al.num_random_samples,
-                [self.config.dataset.min_length, self.config.dataset.max_length],
-                self.config.dataset.dict_size,
-                variableLength=self.config.dataset.variable_length,
-                seed=self.config.seeds.sampler,
-            )
-            outputs = {
-                "samples": samples,
-                "energies": self.oracle.score(samples),
-                "scores": np.zeros(len(samples)),
-                "uncertainties": np.zeros(len(samples)),
-            }
-            sampleDict = self.querier.doAnnealing([1, 0], self.model, outputs, useOracle=True)
-        elif self.config.al.sample_method == "gflownet":
-            gflownet = GFlowNetAgent(
-                self.config, comet=self.comet, proxy=None, al_iter=0, data_path=None
-            )
-
-            t0 = time.time()
-            gflownet.train()
-            printRecord("Training GFlowNet took {} seconds".format(int(time.time() - t0)))
-            t0 = time.time()
-            sampleDict, times = gflownet.sample(
-                self.config.gflownet.n_samples,
-                self.config.dataset.max_length,
-                self.config.dataset.min_length,
-                self.config.dataset.dict_size,
-                self.config.gflownet.min_word_len,
-                self.config.gflownet.max_word_len,
-                self.oracle.score,
-                get_uncertainties=False,
-            )
-            printRecord(
-                "Sampling {} samples from GFlowNet took {} seconds".format(
-                    self.config.gflownet.n_samples, int(time.time() - t0)
-                )
-            )
-            sampleDict["uncertainties"] = np.zeros(len(sampleDict["energies"]))
-            sampleDict = filterOutputs(sampleDict)
-
-            if self.config.gflownet.annealing:
-                sampleDict = self.querier.doAnnealing(
-                    [1, 0], self.model, sampleDict, useOracle=True
-                )
-
-        sampleDict = filterOutputs(sampleDict)  # remove duplicates
-        # take only the top XX samples, for memory purposes
-        maxLen = 10000
-        if len(sampleDict["samples"]) > maxLen:
-            bestInds = np.argsort(sampleDict["energies"])[:maxLen]
-            for key in sampleDict.keys():
-                sampleDict[key] = sampleDict[key][bestInds]
-
-        self.logTopK(sampleDict, prefix="Pure sampling")
-
-        # run clustering as a form of diversity analysis
-        # more clusters means more diverse
-        # this way won't penalize one (e.g., MCMC) for badly oversampling one area
-        # only penalize it for not sampling *enough distinct areas*
-        clusters, clusterScores, clusterVars = doAgglomerativeClustering(
-            sampleDict["samples"],
-            sampleDict["scores"],
-            sampleDict["uncertainties"],
-            self.config.dataset.dict_size,
-            cutoff=self.config.al.minima_dist_cutoff,
-        )
-
-        clusterDict = {
-            "energies": np.asarray([np.amin(cluster_scores) for cluster_scores in clusterScores]),
-            "samples": np.asarray([cluster[0] for cluster in clusters]),  # this one doesn't matter
-        }
-
-        top_cluster_energies = self.logTopK(
-            clusterDict, prefix="Pure sampling - clusters", returnScores=True
-        )
-
-        # identify the clusters within XX% of the known global minimum
-        global_minimum = min(np.amin(sampleDict["energies"]), self.getTrueMinimum(sampleDict))
-        found_minimum = np.amin(sampleDict["energies"])
-        bottom_ranges = [10, 25, 50]  # percent difference from known minimum
-        abs_cluster_numbers = []
-        rel_cluster_numbers = []
-        for bottom_range in bottom_ranges:
-
-            global_minimum_cutoff = global_minimum - bottom_range * global_minimum / 100
-            found_minimum_cutoff = found_minimum - bottom_range * found_minimum / 100
-
-            n_low_clusters1 = np.sum(clusterDict["energies"] < global_minimum_cutoff)
-            n_low_clusters2 = np.sum(clusterDict["energies"] < found_minimum_cutoff)
-            abs_cluster_numbers.append(n_low_clusters1)
-            rel_cluster_numbers.append(n_low_clusters2)
-            if self.comet:
-                self.comet.log_metric(
-                    "Number of clusters {} % from known minimum with {} cutoff".format(
-                        bottom_range, self.config.al.minima_dist_cutoff
-                    ),
-                    n_low_clusters1,
-                )
-                self.comet.log_metric(
-                    "Number of clusters {} % from found minimum with {} cutoff".format(
-                        bottom_range, self.config.al.minima_dist_cutoff
-                    ),
-                    n_low_clusters2,
-                )
-
-        if self.comet:
-            self.comet.log_histogram_3d(
-                sampleDict["energies"], name="pure sampling energies", step=0
-            )
-            self.comet.log_metric("Best energy", np.amin(sampleDict["energies"]))
-            self.comet.log_metric("Proposed true minimum", self.trueMinimum)
-            self.comet.log_metric(
-                "Best sample",
-                numbers2letters(sampleDict["samples"][np.argmin(sampleDict["energies"])]),
-            )
-
-        print("Key metrics:")
-        print(
-            "Best found sample was {}".format(
-                numbers2letters(sampleDict["samples"][np.argmin(sampleDict["energies"])])
-            )
-        )
-        print(
-            "Top K Cluster Energies {:.3f} {:.3f} {:.3f}".format(
-                top_cluster_energies[0], top_cluster_energies[1], top_cluster_energies[2]
-            )
-        )
-        print(
-            "Top K Absolute # Clusters {} {} {}".format(
-                abs_cluster_numbers[0], abs_cluster_numbers[1], abs_cluster_numbers[2]
-            )
-        )
-        print(
-            "Top K Relative # Clusters {} {} {}".format(
-                rel_cluster_numbers[0], rel_cluster_numbers[1], rel_cluster_numbers[2]
-            )
-        )
-        print("Proposed True Global Minimum is {}".format(global_minimum))
-        print("Pure sampling took a total of {} seconds".format(int(time.time() - ti)))
-
-        return sampleDict
-
     def sampleOracle(self):
         """
         for toy models
         do global optimization directly on the oracle to find the true minimum
         :return:
         """
-        printRecord("Asking toy oracle for the true minimum")
+        if self.config.debug:
+            printRecord("Asking toy oracle for the true minimum")
 
         self.model = "abc"
         gammas = np.logspace(
@@ -743,22 +608,23 @@ class ActiveLearning:
             sampleDict = mcmcSampler.sample(self.model, useOracle=True)  # do a genuine search
 
         bestMin = self.getTrueMinimum(sampleDict)
-
-        printRecord(
-            f"Sampling Complete! Lowest Energy Found = {bcolors.FAIL}%.3f{bcolors.ENDC}" % bestMin
-            + " from %d" % self.config.mcmc.num_samplers
-            + " sampling runs."
-        )
-        printRecord(
-            "Best sample found is {}".format(
-                numbers2letters(sampleDict["samples"][np.argmin(sampleDict["energies"])])
+        if self.config.debug:
+            printRecord(
+                f"Sampling Complete! Lowest Energy Found = {bcolors.FAIL}%.3f{bcolors.ENDC}"
+                % bestMin
+                + " from %d" % self.config.mcmc.num_samplers
+                + " sampling runs."
             )
-        )
+            printRecord(
+                "Best sample found is {}".format(
+                    numbers2letters(sampleDict["samples"][np.argmin(sampleDict["energies"])])
+                )
+            )
 
         self.oracleRecord = sampleDict
         self.trueMinimum = bestMin
 
-        if self.comet:
+        if self.comet and ("Sample_Energies" in self.data_to_log):
             self.comet.log_histogram_3d(sampleDict["energies"], name="energies_true", step=0)
 
     def getTrueMinimum(self, sampleDict):
@@ -794,12 +660,14 @@ class ActiveLearning:
             ens = self.oracle.score(goodSamples)
             if np.amin(ens) < bestMin:
                 bestMin = np.amin(ens)
-                printRecord("Pre-loaded minimum was better than one found by sampler")
+                if self.config.debug:
+                    printRecord("Pre-loaded minimum was better than one found by sampler")
 
         elif self.config.dataset.oracle == "nupack energy":
             if np.amin(min_nupack_ens) < bestMin:
                 bestMin = np.amin(min_nupack_ens)
-                printRecord("Pre-loaded minimum was better than one found by sampler")
+                if self.config.debug:
+                    printRecord("Pre-loaded minimum was better than one found by sampler")
 
         elif self.config.dataset.oracle == "nupack pairs":
             goodSamples = (
@@ -812,7 +680,8 @@ class ActiveLearning:
             ens = self.oracle.score(goodSamples)
             if np.amin(ens) < bestMin:
                 bestMin = np.amin(ens)
-                printRecord("Pre-loaded minimum was better than one found by sampler")
+                if self.config.debug:
+                    printRecord("Pre-loaded minimum was better than one found by sampler")
 
         elif self.config.dataset.oracle == "nupack pins":
             max_pins = (
@@ -820,7 +689,8 @@ class ActiveLearning:
             )  # a conservative estimate - 12 bases per stable hairpin
             if max_pins < bestMin:
                 bestMin = max_pins
-                printRecord("Pre-run guess was better than one found by sampler")
+                if self.config.debug:
+                    printRecord("Pre-run guess was better than one found by sampler")
 
         elif self.config.dataset.oracle == "nupack open loop":
             biggest_loop = (
@@ -828,7 +698,8 @@ class ActiveLearning:
             )  # a conservative estimate - 8 bases for the stem (10 would be more conservative) and the rest are open
             if biggest_loop < bestMin:
                 bestMin = biggest_loop
-                printRecord("Pre-run guess was better than one found by sampler")
+                if self.config.debug:
+                    printRecord("Pre-run guess was better than one found by sampler")
 
         elif self.config.dataset.oracle == "nupack motif":
             bestMin = -1  # 100% agreement is the best possible
@@ -879,29 +750,31 @@ class ActiveLearning:
         dataset["samples"] = np.concatenate((dataset["samples"], oracleSequences))
         dataset["energies"] = np.concatenate((dataset["energies"], oracleScores))
 
-        self.logTopK(dataset, prefix="Dataset")  # log statistics on top K samples from the dataset
-
         self.config.dataset_size = len(dataset["samples"])
-
-        printRecord(
-            f"Added{bcolors.OKBLUE}{bcolors.BOLD} %d{bcolors.ENDC}" % int(len(oracleSequences))
-            + " to the dataset, total dataset size is"
-            + bcolors.OKBLUE
-            + " {}".format(int(len(dataset["samples"])))
-            + bcolors.ENDC
-        )
-        printRecord(
-            bcolors.UNDERLINE
-            + "====================================================================="
-            + bcolors.ENDC
-        )
+        if self.config.debug:
+            printRecord(
+                f"Added{bcolors.OKBLUE}{bcolors.BOLD} %d{bcolors.ENDC}" % int(len(oracleSequences))
+                + " to the dataset, total dataset size is"
+                + bcolors.OKBLUE
+                + " {}".format(int(len(dataset["samples"])))
+                + bcolors.ENDC
+            )
+            printRecord(
+                bcolors.UNDERLINE
+                + "====================================================================="
+                + bcolors.ENDC
+            )
         np.save(f"{self.config.workdir}/datasets/{self.config.dataset.oracle}", dataset)
         np.save(
             f"{self.config.workdir}/datasets/{self.config.dataset.oracle}_iter_{self.pipeIter}",
             dataset,
         )
 
-        if self.comet:
+        if self.comet and ("Dataset_Energies" in self.data_to_log):
+
+            self.logTopK(
+                dataset, prefix="Dataset"
+            )  # log statistics on top K samples from the dataset
             self.comet.log_histogram_3d(
                 dataset["energies"], name="dataset energies", step=self.pipeIter
             )
@@ -936,39 +809,6 @@ class ActiveLearning:
 
             if returnScores:
                 return np.asarray(top_scores)
-
-    def getScalingFactor(self):
-        """
-        since regression is not normalized, we identify a scaling factor against which we normalize our results
-        :return:
-        """
-        truncationFactor = 0.1  # cut off x% of the furthest outliers
-        dataset = np.load(
-            f"{self.config.workdir}/datasets/{self.config.dataset.oracle}.npy", allow_pickle=True
-        ).item()
-
-        energies = dataset["energies"]
-        d1 = [np.sum(np.abs(energies[i] - energies)) for i in range(len(energies))]
-        scores = energies[np.argsort(d1)]  # sort according to mutual distance
-        margin = int(len(scores) * truncationFactor)
-        scores = scores[:-margin]  # cut 'margin' of furthest points
-        self.scalingFactor = np.ptp(scores)
-
-    def addRandomSamples(
-        self, samples, energies, uncertainties, minClusterSamples, minClusterEns, minClusterVars
-    ):
-        rands = np.random.randint(
-            0, len(samples), size=self.config.querier.model_state_size - len(minClusterSamples)
-        )
-        randomSamples = samples[rands]
-        randomEnergies = energies[rands]
-        randomUncertainties = uncertainties[rands]
-        minClusterSamples = np.concatenate((minClusterSamples, randomSamples))
-        minClusterEns = np.concatenate((minClusterEns, randomEnergies))
-        minClusterVars = np.concatenate((minClusterVars, randomUncertainties))
-        printRecord("Padded model state with {} random samples from sampler run".format(len(rands)))
-
-        return minClusterSamples, minClusterEns, minClusterVars
 
     def getDataDists(self, samples):
         """
@@ -1011,17 +851,3 @@ class ActiveLearning:
         )
 
         return internalDist, datasetDist, randomDist
-
-
-def trainModel(config, i):
-    """
-    rewritten for training in a parallelized fashion
-    needs to be outside the class method for multiprocessing to work
-    :param i:
-    :return:
-    """
-
-    model = modelNet(config, i)
-    err_te_hist = model.converge(returnHist=True)  # converge model
-
-    return err_te_hist

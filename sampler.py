@@ -216,9 +216,9 @@ class Sampler:
         else:
             self.run_iters = nIters
 
-        for self.iter in tqdm.tqdm(
-            range(self.run_iters)
-        ):  # sample for a certain number of iterations
+        for self.iter in range(
+            self.run_iters
+        ):  # tqdm.tqdm # sample for a certain number of iterations
             self.iterate(model, useOracle)  # try a monte-carlo step!
 
             if (self.iter % self.deltaIter == 0) and (
@@ -228,10 +228,10 @@ class Sampler:
 
             if self.iter % self.randintsResampleAt == 0:  # periodically resample random numbers
                 self.resampleRandints()
-
-        printRecord(
-            "{} samples were recorded on this run".format(len(np.concatenate(self.all_samples)))
-        )
+        if self.config_main.debug:
+            printRecord(
+                "{} samples were recorded on this run".format(len(np.concatenate(self.all_samples)))
+            )
 
     def postSampleAnnealing(self, initConfigs, model, useOracle=False, seed=0):
         """
@@ -251,7 +251,7 @@ class Sampler:
 
         self.initConvergenceStats()
         self.resampleRandints()
-        for self.iter in tqdm.tqdm(range(self.run_iters)):
+        for self.iter in range(self.run_iters):  # tqdm.tqdm(range(self.run_iters)):
             self.iterate(model, useOracle)
 
             self.temperature = [

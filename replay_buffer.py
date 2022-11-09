@@ -71,9 +71,11 @@ class ReplayMemory(object):
     def push(self, state, action, next_state, reward, terminal):
         self.memory.append(
             {
-                "state": torch.tensor(state),
+                "state": state if torch.is_tensor(state) else torch.tensor(state),
                 "action": action,
-                "next_state": torch.tensor(next_state),
+                "next_state": next_state
+                if torch.is_tensor(next_state)
+                else torch.tensor(next_state),
                 "reward": reward,
                 "terminal": terminal,
             }

@@ -1,6 +1,6 @@
 # General
 test_mode: False
-debug: True
+debug: False
 run_num: 0
 explicit_run_enumeration: False
 machine: "local"
@@ -53,23 +53,25 @@ rl:
   action_size: 9
   hidden_size: 128
   episodes: 100000
-  gamma: 0.99 # discount factor
+  gamma: 0.95 # discount factor
   alpha: 0.001 # learning rate
   lr_gamma: 0.99
   lr_step: 100
   eps_start: 1
   eps_end: 0.2
-  eps_decay: 0.999
+  eps_decay: 0.995
   buffer_size: 100000
   min_memory: 5
   tau: 0.1 # target network soft update hyperparameter SET to 1 FOR HARD UPDATE
   dqn_epochs: 10
   dqn_train_frequency: 1
-  eval_interval: 100
+  eval_interval: 50
+  eval_steps: 5
   max_grad_norm: 10
   learning_start: 1
   log_rl_to_console: 1 # 1 for true, 0 for false
   seed: 1
+  calculate_baseline: True
 
 # Querier
 querier:
